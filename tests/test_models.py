@@ -5,6 +5,7 @@ from swing_trader.models.base import BaseModel, Signal
 from swing_trader.models.random_forest import RandomForestModel
 from swing_trader.models.xgboost_model import XGBoostModel
 from swing_trader.models.lstm import LSTMModel
+from swing_trader.models.ensemble import EnsembleModel
 
 def test_signal_enum():
     assert Signal.BUY.value == 1
@@ -80,3 +81,34 @@ def test_lstm_fit_and_predict(sample_data):
     preds = model.predict(X)
     assert len(preds) == len(X) - model.sequence_length + 1
     assert all(p in [-1, 0, 1] for p in preds)
+
+
+def test_ensemble_voting(sample_data):
+    X, y = sample_data
+    rf = RandomForestModel(n_estimators=10)
+    xgb_model = XGBoostModel(n_estimators=10)
+    rf.fit(X, y)
+    xgb_model.fit(X, y)
+
+    ensemble = EnsembleModel(models=[rf, xgb_model], method="voting")
+    preds = ensemble.predict(X)
+
+    assert len(preds) == len(X)
+    assert all(p in [-1, 0, 1] for p in preds)
+
+
+def test_ensemble_weighted_average(sample_data):
+    X, y = sample_data
+    rf = RandomForestModel(n_estimators=10)
+    xgb_model = XGBoostModel(n_estimators=10)
+    rf.fit(X, y)
+    xgb_model.fit(X, y)
+
+    ensemble = EnsembleModel(
+        models=[rf, xgb_model],
+        method="weighted",
+        weights=[0.6, 0.4]
+    )
+    proba = ensemble.predict_proba(X)
+
+    assert proba.shape == (len(X), 3)
