@@ -1,4 +1,5 @@
 import sys
+import numpy as np
 
 # Pre-import torch in main thread to avoid DLL loading issues in worker threads
 try:
@@ -213,6 +214,12 @@ class SignalsTab(QWidget):
         self.period_combo.setCurrentText("6mo")
         ticker_layout.addWidget(self.period_combo)
 
+        ticker_layout.addWidget(QLabel("Model"))
+        self.model_combo = QComboBox()
+        self.model_combo.addItem("-- Select Model --")
+        ticker_layout.addWidget(self.model_combo)
+        self.refresh_model_list()
+
         self.analyze_btn = QPushButton("Analyze")
         self.analyze_btn.clicked.connect(self.on_analyze)
         ticker_layout.addWidget(self.analyze_btn)
@@ -268,15 +275,74 @@ class SignalsTab(QWidget):
         self.status_label.setText(f"Analyzing {ticker}...")
         self.analyze_btn.setEnabled(False)
 
+        # Capture UI values before starting thread
+        model_name = self.model_combo.currentData()
+        period = self.period_combo.currentText()
+
         def analyze():
             from ..data.fetcher import StockDataFetcher
             from ..features.indicators import TechnicalIndicators
+            from ..services import ModelRegistry
+
             fetcher = StockDataFetcher()
             indicators = TechnicalIndicators()
-            data = fetcher.fetch(ticker, period=self.period_combo.currentText())
+            data = fetcher.fetch(ticker, period=period)
             if data is not None and not data.empty:
                 data = indicators.add_all(data)
-            return data, ticker
+
+            signal_info = None
+            if model_name and data is not None and not data.empty:
+                # Load model and generate predictions
+                registry = ModelRegistry()
+                try:
+                    model = registry.get_model(model_name)
+
+                    # Prepare features (exclude non-feature columns)
+                    exclude_cols = ['open', 'high', 'low', 'close', 'volume', 'label']
+                    feature_cols = [c for c in data.columns if c not in exclude_cols]
+                    X = data[feature_cols].dropna()
+
+                    if not X.empty:
+                        # Generate predictions
+                        predictions = model.predict(X)
+
+                        # Handle LSTM shorter output due to sequence creation
+                        if hasattr(model, 'sequence_length') and len(predictions) < len(X):
+                            seq_len = model.sequence_length
+                            # Align predictions with data index
+                            pred_index = X.index[seq_len-1:]
+                            data.loc[pred_index, 'signal'] = predictions
+                        else:
+                            data.loc[X.index, 'signal'] = predictions
+
+                        # Get latest prediction info
+                        latest_pred = predictions[-1]
+                        signal_map = {-1: 'SELL', 0: 'HOLD', 1: 'BUY'}
+                        signal = signal_map.get(latest_pred, 'HOLD')
+
+                        # Try to get probabilities for confidence
+                        try:
+                            probas = model.predict_proba(X)
+                            if probas is not None and len(probas) > 0:
+                                latest_proba = probas[-1]
+                                confidence = max(latest_proba)
+                                probabilities = {'SELL': latest_proba[0], 'HOLD': latest_proba[1], 'BUY': latest_proba[2]}
+                            else:
+                                confidence = 0.5
+                                probabilities = None
+                        except:
+                            confidence = 0.5
+                            probabilities = None
+
+                        signal_info = {
+                            'signal': signal,
+                            'confidence': confidence,
+                            'probabilities': probabilities
+                        }
+                except Exception as e:
+                    print(f"Model prediction error: {e}")
+
+            return data, ticker, signal_info
 
         self.worker = WorkerThread(analyze)
         self.worker.finished.connect(self.on_analyze_complete)
@@ -284,17 +350,41 @@ class SignalsTab(QWidget):
         self.worker.start()
 
     def on_analyze_complete(self, result):
-        data, ticker = result
+        data, ticker, signal_info = result
         self.analyze_btn.setEnabled(True)
         if data is None or data.empty:
             self.status_label.setText(f"No data for {ticker}")
             return
-        self.status_label.setText(f"Analysis complete for {ticker}")
+
+        # Update status with signal info
+        if signal_info:
+            signal = signal_info['signal']
+            confidence = signal_info['confidence']
+            color_map = {'BUY': '#00D4AA', 'SELL': '#FF6B6B', 'HOLD': '#8B949E'}
+            color = color_map.get(signal, '#8B949E')
+            self.status_label.setText(f"{ticker}: {signal} ({confidence:.0%})")
+            self.status_label.setStyleSheet(f"color: {color}; font-weight: bold;")
+        else:
+            self.status_label.setText(f"Analysis complete for {ticker}")
+            self.status_label.setStyleSheet("color: #6E7681;")
+
         self.chart.axes.clear()
         self.chart.axes.plot(data.index, data['close'], color='#58A6FF', label='Close')
         if 'sma_20' in data.columns:
             self.chart.axes.plot(data.index, data['sma_20'], color='#FFD93D', label='SMA 20', alpha=0.7)
-        self.chart.axes.legend(facecolor='#0D1117', edgecolor='#30363D')
+
+        # Add signal markers if available
+        if 'signal' in data.columns:
+            buy_mask = data['signal'] == 1
+            sell_mask = data['signal'] == -1
+            if buy_mask.any():
+                self.chart.axes.scatter(data.index[buy_mask], data.loc[buy_mask, 'close'],
+                                       marker='^', color='#00D4AA', s=100, label='BUY', zorder=5)
+            if sell_mask.any():
+                self.chart.axes.scatter(data.index[sell_mask], data.loc[sell_mask, 'close'],
+                                       marker='v', color='#FF6B6B', s=100, label='SELL', zorder=5)
+
+        self.chart.axes.legend(facecolor='#0D1117', edgecolor='#30363D', labelcolor='#E6EDF3')
         self.chart.axes.set_facecolor('#0D1117')
         self.chart.draw()
 
@@ -354,6 +444,30 @@ class SignalsTab(QWidget):
         self.analyze_btn.setEnabled(True)
         self.scan_btn.setEnabled(True)
         self.status_label.setText(f"Error: {error[:40]}")
+
+    def refresh_model_list(self):
+        """Populate model dropdown from registry."""
+        from ..services import ModelRegistry
+        registry = ModelRegistry()
+
+        current = self.model_combo.currentText()
+        self.model_combo.clear()
+        self.model_combo.addItem("-- Select Model --")
+
+        for info in registry.list_models():
+            self.model_combo.addItem(f"{info.name} ({info.model_type})", info.name)
+
+        # Restore selection if possible
+        idx = self.model_combo.findText(current)
+        if idx >= 0:
+            self.model_combo.setCurrentIndex(idx)
+
+    def set_model(self, model_name: str):
+        """Set the selected model by name."""
+        for i in range(self.model_combo.count()):
+            if self.model_combo.itemData(i) == model_name:
+                self.model_combo.setCurrentIndex(i)
+                break
 
 
 class TrainingTab(QWidget):
