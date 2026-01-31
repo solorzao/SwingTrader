@@ -9,14 +9,14 @@ ML-powered swing trading signal generator for US equities. Uses ensemble machine
 - **Hyperparameter Tuning**: Optuna-based Bayesian optimization with TimeSeriesSplit CV
 - **Experiment Tracking**: MLflow integration for model versioning and metrics
 - **Backtesting Engine**: Walk-forward testing with Sharpe ratio, max drawdown, win rate
-- **Desktop UI**: GPU-accelerated Dear PyGui interface with dark trading terminal theme
+- **Desktop UI**: PyQt6 interface with dark trading terminal theme
 - **CLI Interface**: Full command-line access to all features
 
 ## Installation
 
 ### Prerequisites
 
-- Python 3.11+
+- Python 3.11+ (tested on Python 3.14)
 - NVIDIA GPU with CUDA (optional, for GPU acceleration)
 
 ### Setup
@@ -111,10 +111,7 @@ src/swing_trader/
 ├── signals/
 │   └── generator.py        # Signal generation pipeline
 ├── ui/
-│   ├── app.py              # Main Dear PyGui application
-│   ├── theme.py            # Dark trading terminal theme
-│   ├── components/         # Reusable UI components
-│   └── views/              # Tab views (signals, training, etc.)
+│   └── app.py              # Main PyQt6 application
 └── cli.py                  # Command-line interface
 ```
 
