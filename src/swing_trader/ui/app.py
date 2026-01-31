@@ -270,9 +270,9 @@ class SignalsTab(QWidget):
             return
         self.status_label.setText(f"Analysis complete for {ticker}")
         self.chart.axes.clear()
-        self.chart.axes.plot(data.index, data['Close'], color='#58A6FF', label='Close')
-        if 'SMA_20' in data.columns:
-            self.chart.axes.plot(data.index, data['SMA_20'], color='#FFD93D', label='SMA 20', alpha=0.7)
+        self.chart.axes.plot(data.index, data['close'], color='#58A6FF', label='Close')
+        if 'sma_20' in data.columns:
+            self.chart.axes.plot(data.index, data['sma_20'], color='#FFD93D', label='SMA 20', alpha=0.7)
         self.chart.axes.legend(facecolor='#0D1117', edgecolor='#30363D')
         self.chart.axes.set_facecolor('#0D1117')
         self.chart.draw()
@@ -295,9 +295,9 @@ class SignalsTab(QWidget):
                         continue
                     data = indicators.add_all(data)
                     latest = data.iloc[-1]
-                    rsi = latest.get('RSI', 50)
-                    macd = latest.get('MACD', 0)
-                    macd_signal = latest.get('MACD_Signal', 0)
+                    rsi = latest.get('rsi_14', 50)
+                    macd = latest.get('macd', 0)
+                    macd_signal = latest.get('macd_signal', 0)
                     if rsi < 30 and macd > macd_signal:
                         signal, conf = "BUY", min(1.0, (30 - rsi) / 30 + 0.5)
                     elif rsi > 70 and macd < macd_signal:
@@ -305,7 +305,7 @@ class SignalsTab(QWidget):
                     else:
                         signal, conf = "HOLD", 0.5
                     results.append({"ticker": ticker, "signal": signal, "confidence": conf,
-                                   "price": latest['Close'], "rsi": rsi})
+                                   "price": latest['close'], "rsi": rsi})
                 except:
                     continue
             return results
@@ -554,7 +554,7 @@ class BacktestTab(QWidget):
             data = indicators.add_all(data)
             signals = pd.Series(index=data.index, data=0)
             for i in range(len(data)):
-                rsi = data['RSI'].iloc[i] if 'RSI' in data.columns else 50
+                rsi = data['rsi_14'].iloc[i] if 'rsi_14' in data.columns else 50
                 if pd.notna(rsi):
                     if rsi < 30:
                         signals.iloc[i] = 1
