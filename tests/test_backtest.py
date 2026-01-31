@@ -33,3 +33,32 @@ def test_backtest_equity_curve(sample_backtest_data):
     result = engine.run(sample_backtest_data)
     assert len(result.equity_curve) == len(sample_backtest_data)
     assert result.equity_curve.iloc[0] == 10000
+
+
+def test_backtest_mark_to_market_equity():
+    """Test that equity curve reflects unrealized P&L during open positions."""
+    # Create simple test data with predictable price movement
+    dates = pd.date_range("2024-01-01", periods=10, freq="D")
+    # Price rises steadily from 100 to 109
+    close = np.array([100, 101, 102, 103, 104, 105, 106, 107, 108, 109], dtype=float)
+    # Buy on day 1, hold until end (exit forced on last day)
+    signals = np.array([0, 1, 0, 0, 0, 0, 0, 0, 0, 0])
+
+    df = pd.DataFrame({"close": close, "signal": signals}, index=dates)
+
+    engine = BacktestEngine(initial_capital=10000, position_size=1.0, commission=0, slippage=0)
+    result = engine.run(df)
+
+    # Verify equity curve changes during the open position (not flat staircase)
+    # After entry at day 1 (price ~101), equity should increase each day as price rises
+    equity_changes = result.equity_curve.diff().dropna()
+
+    # During holding period (days 2-8), equity should change with price
+    holding_period_changes = equity_changes.iloc[1:8]  # Days after entry, before forced exit
+
+    # At least some days should show equity changes (mark-to-market)
+    assert (holding_period_changes != 0).sum() > 0, "Equity should change during open position (mark-to-market)"
+
+    # Since price is rising and we're long, most equity changes should be positive
+    assert (holding_period_changes > 0).sum() >= (holding_period_changes < 0).sum(), \
+        "Long position with rising prices should show positive equity changes"

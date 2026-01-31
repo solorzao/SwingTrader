@@ -191,6 +191,7 @@ class SignalsTab(QWidget):
     def __init__(self):
         super().__init__()
         self.worker = None
+        self._current_model = None  # Set by global selector
         self.setup_ui()
 
     def setup_ui(self):
@@ -214,12 +215,6 @@ class SignalsTab(QWidget):
         self.period_combo.setCurrentText("6mo")
         ticker_layout.addWidget(self.period_combo)
 
-        ticker_layout.addWidget(QLabel("Model"))
-        self.model_combo = QComboBox()
-        self.model_combo.addItem("-- Select Model --")
-        ticker_layout.addWidget(self.model_combo)
-        self.refresh_model_list()
-
         self.analyze_btn = QPushButton("Analyze")
         self.analyze_btn.clicked.connect(self.on_analyze)
         ticker_layout.addWidget(self.analyze_btn)
@@ -233,14 +228,23 @@ class SignalsTab(QWidget):
         scan_group = QGroupBox("QUICK SCAN")
         scan_layout = QVBoxLayout(scan_group)
 
+        scan_layout.addWidget(QLabel("Stock List"))
+        self.stocklist_combo = QComboBox()
+        self.stocklist_combo.addItems(["Top 10 Tech", "S&P 50", "S&P 100"])
+        scan_layout.addWidget(self.stocklist_combo)
+
         scan_layout.addWidget(QLabel("Filter"))
         self.filter_combo = QComboBox()
         self.filter_combo.addItems(["All Signals", "BUY Only", "SELL Only"])
         scan_layout.addWidget(self.filter_combo)
 
-        self.scan_btn = QPushButton("Scan Top Stocks")
+        self.scan_btn = QPushButton("Scan")
         self.scan_btn.clicked.connect(self.on_scan)
         scan_layout.addWidget(self.scan_btn)
+
+        self.scan_progress = QProgressBar()
+        self.scan_progress.setVisible(False)
+        scan_layout.addWidget(self.scan_progress)
 
         left_layout.addWidget(scan_group)
         left_layout.addStretch()
@@ -257,9 +261,20 @@ class SignalsTab(QWidget):
         results_group = QGroupBox("SCAN RESULTS")
         results_layout = QVBoxLayout(results_group)
         self.results_table = QTableWidget()
-        self.results_table.setColumnCount(5)
-        self.results_table.setHorizontalHeaderLabels(["Ticker", "Signal", "Confidence", "Price", "RSI"])
+        self.results_table.setColumnCount(9)
+        self.results_table.setHorizontalHeaderLabels([
+            "Ticker", "Signal", "BUY%", "HOLD%", "SELL%", "Price", "RSI", "MACD", "Trend"
+        ])
         self.results_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.results_table.verticalHeader().setVisible(False)
+        self.results_table.setStyleSheet("""
+            QTableWidget {
+                font-size: 11px;
+            }
+            QHeaderView::section {
+                font-size: 10px;
+            }
+        """)
         results_layout.addWidget(self.results_table)
         right_layout.addWidget(results_group)
 
@@ -275,8 +290,8 @@ class SignalsTab(QWidget):
         self.status_label.setText(f"Analyzing {ticker}...")
         self.analyze_btn.setEnabled(False)
 
-        # Capture UI values before starting thread
-        model_name = self.model_combo.currentData()
+        # Use model from global selector
+        model_name = self._current_model
         period = self.period_combo.currentText()
 
         def analyze():
@@ -388,19 +403,47 @@ class SignalsTab(QWidget):
         self.chart.axes.set_facecolor('#0D1117')
         self.chart.draw()
 
+    # S&P 500 stock lists by market cap (as of 2024)
+    SP500_TOP_10 = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "BRK-B", "JPM", "V"]
+
+    SP500_TOP_50 = [
+        "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "BRK-B", "JPM", "V",
+        "UNH", "XOM", "JNJ", "WMT", "MA", "PG", "CVX", "HD", "ABBV", "MRK",
+        "LLY", "KO", "PEP", "COST", "BAC", "AVGO", "TMO", "MCD", "CSCO", "PFE",
+        "ACN", "ABT", "CRM", "DHR", "CMCSA", "NKE", "ORCL", "VZ", "TXN", "ADBE",
+        "WFC", "NEE", "PM", "RTX", "UPS", "MS", "INTC", "BMY", "QCOM", "UNP"
+    ]
+
+    SP500_TOP_100 = SP500_TOP_50 + [
+        "HON", "LOW", "T", "SPGI", "IBM", "SCHW", "DE", "GS", "ELV", "AMD",
+        "AMAT", "CAT", "AXP", "LMT", "INTU", "BKNG", "GILD", "BLK", "MDLZ", "SYK",
+        "ADI", "ISRG", "TJX", "AMGN", "ADP", "VRTX", "CI", "MMC", "CB", "PLD",
+        "MO", "ZTS", "TMUS", "SO", "DUK", "REGN", "CME", "CL", "SLB", "BDX",
+        "NOC", "PGR", "EOG", "ITW", "BSX", "FISV", "CSX", "AON", "WM", "ICE"
+    ]
+
     def on_scan(self):
         self.status_label.setText("Scanning...")
         self.scan_btn.setEnabled(False)
+        self.scan_progress.setVisible(True)
+        self.scan_progress.setValue(0)
 
-        model_name = self.model_combo.currentData()
+        model_name = self._current_model
         filter_type = self.filter_combo.currentText()
+        stock_list = self.stocklist_combo.currentText()
 
         def scan(progress_callback=None):
             from ..data.fetcher import StockDataFetcher
             from ..features.indicators import TechnicalIndicators
             from ..services import ModelRegistry
 
-            tickers = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "JPM", "V", "WMT"]
+            # Select ticker list based on choice
+            if stock_list == "S&P 50":
+                tickers = SignalsTab.SP500_TOP_50
+            elif stock_list == "S&P 100":
+                tickers = SignalsTab.SP500_TOP_100
+            else:  # Top 10 Tech
+                tickers = SignalsTab.SP500_TOP_10
             fetcher = StockDataFetcher()
             indicators = TechnicalIndicators()
 
@@ -421,6 +464,16 @@ class SignalsTab(QWidget):
                     data = indicators.add_all(data)
                     latest = data.iloc[-1]
 
+                    # Get indicator values
+                    rsi = latest.get('rsi_14', 50)
+                    macd = latest.get('macd', 0)
+                    macd_signal_val = latest.get('macd_signal', 0)
+                    sma_20 = latest.get('sma_20', 0)
+                    price = latest['close']
+
+                    # Determine trend (price vs SMA)
+                    trend = "↑ Up" if price > sma_20 else "↓ Down"
+
                     if model:
                         # Use ML model
                         predictions = model.predict(data)
@@ -431,19 +484,21 @@ class SignalsTab(QWidget):
                         latest_proba = probas[-1]
 
                         signal = "BUY" if latest_pred == 1 else "SELL" if latest_pred == -1 else "HOLD"
-                        confidence = float(max(latest_proba))
+                        # Probabilities: [SELL, HOLD, BUY] based on label mapping
+                        prob_sell = float(latest_proba[0])
+                        prob_hold = float(latest_proba[1])
+                        prob_buy = float(latest_proba[2])
                     else:
                         # Fallback to RSI/MACD
-                        rsi = latest.get('rsi_14', 50)
-                        macd = latest.get('macd', 0)
-                        macd_signal = latest.get('macd_signal', 0)
-
-                        if rsi < 30 and macd > macd_signal:
-                            signal, confidence = "BUY", min(1.0, (30 - rsi) / 30 + 0.5)
-                        elif rsi > 70 and macd < macd_signal:
-                            signal, confidence = "SELL", min(1.0, (rsi - 70) / 30 + 0.5)
+                        if rsi < 30 and macd > macd_signal_val:
+                            signal = "BUY"
+                            prob_buy, prob_hold, prob_sell = 0.7, 0.2, 0.1
+                        elif rsi > 70 and macd < macd_signal_val:
+                            signal = "SELL"
+                            prob_buy, prob_hold, prob_sell = 0.1, 0.2, 0.7
                         else:
-                            signal, confidence = "HOLD", 0.5
+                            signal = "HOLD"
+                            prob_buy, prob_hold, prob_sell = 0.2, 0.6, 0.2
 
                     # Apply filter
                     if filter_type == "BUY Only" and signal != "BUY":
@@ -454,9 +509,13 @@ class SignalsTab(QWidget):
                     results.append({
                         "ticker": ticker,
                         "signal": signal,
-                        "confidence": confidence,
-                        "price": latest['close'],
-                        "rsi": latest.get('rsi_14', 0)
+                        "prob_buy": prob_buy,
+                        "prob_hold": prob_hold,
+                        "prob_sell": prob_sell,
+                        "price": price,
+                        "rsi": rsi,
+                        "macd": macd - macd_signal_val,  # MACD histogram value
+                        "trend": trend
                     })
                 except Exception as e:
                     print(f"Error scanning {ticker}: {e}")
@@ -467,64 +526,103 @@ class SignalsTab(QWidget):
         self.worker = WorkerThread(scan)
         self.worker.finished.connect(self.on_scan_complete)
         self.worker.error.connect(self.on_error)
-        self.worker.progress.connect(lambda msg, pct: self.status_label.setText(msg))
+        self.worker.progress.connect(self._on_scan_progress)
         self.worker.start()
+
+    def _on_scan_progress(self, msg, pct):
+        self.status_label.setText(msg)
+        self.scan_progress.setValue(pct)
 
     def on_scan_complete(self, results):
         self.scan_btn.setEnabled(True)
-        self.status_label.setText(f"Found {len(results)} results")
+        self.scan_progress.setVisible(False)
+        self.status_label.setText(f"Found {len(results)} signals")
         self.results_table.setRowCount(len(results))
-        for i, r in enumerate(sorted(results, key=lambda x: x['confidence'], reverse=True)):
+
+        # Sort by highest relevant probability
+        def sort_key(r):
+            if r['signal'] == 'BUY':
+                return r['prob_buy']
+            elif r['signal'] == 'SELL':
+                return r['prob_sell']
+            return r['prob_hold']
+
+        for i, r in enumerate(sorted(results, key=sort_key, reverse=True)):
+            # Ticker
             self.results_table.setItem(i, 0, QTableWidgetItem(r['ticker']))
+
+            # Signal with color
             signal_item = QTableWidgetItem(r['signal'])
-            color = "#00D4AA" if r['signal'] == "BUY" else "#FF6B6B" if r['signal'] == "SELL" else "#6E7681"
+            color = "#3FB950" if r['signal'] == "BUY" else "#F85149" if r['signal'] == "SELL" else "#8B949E"
             signal_item.setForeground(QColor(color))
             self.results_table.setItem(i, 1, signal_item)
-            self.results_table.setItem(i, 2, QTableWidgetItem(f"{r['confidence']:.0%}"))
-            self.results_table.setItem(i, 3, QTableWidgetItem(f"${r['price']:.2f}"))
-            self.results_table.setItem(i, 4, QTableWidgetItem(f"{r['rsi']:.1f}"))
+
+            # Probability breakdown with color intensity
+            buy_item = QTableWidgetItem(f"{r['prob_buy']:.0%}")
+            buy_item.setForeground(QColor("#3FB950"))
+            self.results_table.setItem(i, 2, buy_item)
+
+            hold_item = QTableWidgetItem(f"{r['prob_hold']:.0%}")
+            hold_item.setForeground(QColor("#8B949E"))
+            self.results_table.setItem(i, 3, hold_item)
+
+            sell_item = QTableWidgetItem(f"{r['prob_sell']:.0%}")
+            sell_item.setForeground(QColor("#F85149"))
+            self.results_table.setItem(i, 4, sell_item)
+
+            # Price
+            self.results_table.setItem(i, 5, QTableWidgetItem(f"${r['price']:.2f}"))
+
+            # RSI with color (oversold < 30, overbought > 70)
+            rsi_item = QTableWidgetItem(f"{r['rsi']:.1f}")
+            if r['rsi'] < 30:
+                rsi_item.setForeground(QColor("#3FB950"))  # Oversold = potential buy
+            elif r['rsi'] > 70:
+                rsi_item.setForeground(QColor("#F85149"))  # Overbought = potential sell
+            self.results_table.setItem(i, 6, rsi_item)
+
+            # MACD histogram
+            macd_item = QTableWidgetItem(f"{r['macd']:.3f}")
+            macd_color = "#3FB950" if r['macd'] > 0 else "#F85149"
+            macd_item.setForeground(QColor(macd_color))
+            self.results_table.setItem(i, 7, macd_item)
+
+            # Trend
+            trend_item = QTableWidgetItem(r['trend'])
+            trend_color = "#3FB950" if "Up" in r['trend'] else "#F85149"
+            trend_item.setForeground(QColor(trend_color))
+            self.results_table.setItem(i, 8, trend_item)
 
     def on_error(self, error):
         self.analyze_btn.setEnabled(True)
         self.scan_btn.setEnabled(True)
+        self.scan_progress.setVisible(False)
         self.status_label.setText(f"Error: {error[:40]}")
 
-    def refresh_model_list(self):
-        """Populate model dropdown from registry."""
-        from ..services import ModelRegistry
-        registry = ModelRegistry()
-
-        current = self.model_combo.currentText()
-        self.model_combo.clear()
-        self.model_combo.addItem("-- Select Model --")
-
-        for info in registry.list_models():
-            self.model_combo.addItem(f"{info.name} ({info.model_type})", info.name)
-
-        # Restore selection if possible
-        idx = self.model_combo.findText(current)
-        if idx >= 0:
-            self.model_combo.setCurrentIndex(idx)
-
     def set_model(self, model_name: str):
-        """Set the selected model by name."""
-        for i in range(self.model_combo.count()):
-            if self.model_combo.itemData(i) == model_name:
-                self.model_combo.setCurrentIndex(i)
-                break
+        """Set the active model (called from global selector)."""
+        self._current_model = model_name if model_name else None
 
 
 class TrainingTab(QWidget):
+    training_complete = pyqtSignal()  # Emitted when training finishes successfully
+
     def __init__(self):
         super().__init__()
         self.worker = None
+        self.mlflow_process = None
         self.setup_ui()
 
     def setup_ui(self):
         layout = QHBoxLayout(self)
 
+        # Left panel with scroll area for all controls
+        left_scroll = QScrollArea()
+        left_scroll.setFixedWidth(400)
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
         left_panel = QWidget()
-        left_panel.setFixedWidth(380)
         left_layout = QVBoxLayout(left_panel)
 
         train_group = QGroupBox("MODEL TRAINING")
@@ -532,7 +630,7 @@ class TrainingTab(QWidget):
 
         train_layout.addWidget(QLabel("Model Type"))
         self.model_combo = QComboBox()
-        self.model_combo.addItems(["Random Forest", "XGBoost", "LSTM", "All Models"])
+        self.model_combo.addItems(["Random Forest", "XGBoost", "LSTM"])
         self.model_combo.currentTextChanged.connect(self.on_model_changed)
         train_layout.addWidget(self.model_combo)
 
@@ -542,11 +640,58 @@ class TrainingTab(QWidget):
 
         train_layout.addWidget(QLabel("Data Period"))
         self.period_combo = QComboBox()
-        self.period_combo.addItems(["1y", "2y", "5y"])
-        self.period_combo.setCurrentText("2y")
+        self.period_combo.addItems(["3mo", "6mo", "1y", "2y", "5y"])
+        self.period_combo.setCurrentText("1y")
         train_layout.addWidget(self.period_combo)
 
         left_layout.addWidget(train_group)
+
+        # Feature Configuration group
+        features_group = QGroupBox("FEATURES")
+        features_layout = QVBoxLayout(features_group)
+
+        # Feature checkboxes
+        self.feature_checks = {}
+        feature_row1 = QHBoxLayout()
+        for name in ["SMA", "EMA", "RSI"]:
+            cb = QCheckBox(name)
+            cb.setChecked(True)
+            self.feature_checks[name] = cb
+            feature_row1.addWidget(cb)
+        features_layout.addLayout(feature_row1)
+
+        feature_row2 = QHBoxLayout()
+        for name in ["MACD", "Bollinger", "ATR"]:
+            cb = QCheckBox(name)
+            cb.setChecked(True)
+            self.feature_checks[name] = cb
+            feature_row2.addWidget(cb)
+        features_layout.addLayout(feature_row2)
+
+        feature_row3 = QHBoxLayout()
+        for name in ["OBV", "Stochastic"]:
+            cb = QCheckBox(name)
+            cb.setChecked(True)
+            self.feature_checks[name] = cb
+            feature_row3.addWidget(cb)
+        features_layout.addLayout(feature_row3)
+
+        # Feature parameters
+        features_layout.addWidget(QLabel("RSI Period"))
+        self.rsi_period_spin = QSpinBox()
+        self.rsi_period_spin.setRange(5, 30)
+        self.rsi_period_spin.setValue(14)
+        features_layout.addWidget(self.rsi_period_spin)
+
+        features_layout.addWidget(QLabel("SMA Periods (comma-sep)"))
+        self.sma_periods_input = QLineEdit("10, 20, 50")
+        features_layout.addWidget(self.sma_periods_input)
+
+        features_layout.addWidget(QLabel("EMA Periods (comma-sep)"))
+        self.ema_periods_input = QLineEdit("12, 26")
+        features_layout.addWidget(self.ema_periods_input)
+
+        left_layout.addWidget(features_group)
 
         # Hyperparameters group
         self.hyperparam_group = QGroupBox("HYPERPARAMETERS")
@@ -554,9 +699,25 @@ class TrainingTab(QWidget):
         self.setup_rf_hyperparams()
         left_layout.addWidget(self.hyperparam_group)
 
+        # Training buttons
         self.train_btn = QPushButton("Start Training")
         self.train_btn.clicked.connect(self.on_train)
         left_layout.addWidget(self.train_btn)
+
+        # MLflow button
+        mlflow_layout = QHBoxLayout()
+        self.mlflow_btn = QPushButton("Launch MLflow UI")
+        self.mlflow_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #0D47A1;
+            }
+            QPushButton:hover {
+                background-color: #1565C0;
+            }
+        """)
+        self.mlflow_btn.clicked.connect(self.on_launch_mlflow)
+        mlflow_layout.addWidget(self.mlflow_btn)
+        left_layout.addLayout(mlflow_layout)
 
         status_group = QGroupBox("STATUS")
         status_layout = QVBoxLayout(status_group)
@@ -608,7 +769,9 @@ class TrainingTab(QWidget):
 
         right_layout.addLayout(charts_layout)
 
-        layout.addWidget(left_panel)
+        # Add left panel to scroll area
+        left_scroll.setWidget(left_panel)
+        layout.addWidget(left_scroll)
         layout.addWidget(right_panel, 1)
 
     def clear_hyperparam_layout(self):
@@ -703,8 +866,52 @@ class TrainingTab(QWidget):
             self.setup_xgb_hyperparams()
         elif model_name == "LSTM":
             self.setup_lstm_hyperparams()
-        else:  # All Models
-            self.setup_rf_hyperparams()
+
+    def on_launch_mlflow(self):
+        """Launch MLflow UI in browser."""
+        import webbrowser
+        from ..services import MLflowTracker
+        from PyQt6.QtCore import QTimer
+
+        url = MLflowTracker.get_ui_url(5000)
+
+        if self.mlflow_process is None or self.mlflow_process.poll() is not None:
+            # Not running or terminated - start it
+            self.status_label.setText("Starting MLflow UI server...")
+            try:
+                self.mlflow_process = MLflowTracker.launch_ui(port=5000)
+                self.mlflow_btn.setText("Open MLflow UI")
+                self.status_label.setText(f"MLflow UI starting at {url}")
+
+                # Open browser after a delay to let server start
+                QTimer.singleShot(2000, lambda: webbrowser.open(url))
+            except Exception as e:
+                self.status_label.setText(f"Failed to start MLflow: {str(e)[:50]}")
+                self.mlflow_process = None
+        else:
+            # Already running, just open browser
+            webbrowser.open(url)
+            self.status_label.setText(f"Opening {url}")
+
+    def get_feature_config(self) -> dict:
+        """Get current feature configuration from UI."""
+        return {
+            "features": {
+                "sma": self.feature_checks["SMA"].isChecked(),
+                "ema": self.feature_checks["EMA"].isChecked(),
+                "rsi": self.feature_checks["RSI"].isChecked(),
+                "macd": self.feature_checks["MACD"].isChecked(),
+                "bollinger": self.feature_checks["Bollinger"].isChecked(),
+                "atr": self.feature_checks["ATR"].isChecked(),
+                "obv": self.feature_checks["OBV"].isChecked(),
+                "stochastic": self.feature_checks["Stochastic"].isChecked(),
+            },
+            "params": {
+                "rsi_period": self.rsi_period_spin.value(),
+                "sma_periods": [int(x.strip()) for x in self.sma_periods_input.text().split(",") if x.strip()],
+                "ema_periods": [int(x.strip()) for x in self.ema_periods_input.text().split(",") if x.strip()],
+            }
+        }
 
     def on_train(self):
         self.status_label.setText("Starting training...")
@@ -715,6 +922,7 @@ class TrainingTab(QWidget):
         model_type = self.model_combo.currentText()
         tickers_text = self.tickers_input.text()
         period = self.period_combo.currentText()
+        feature_config = self.get_feature_config()
 
         # Common params (may not exist depending on model type)
         n_estimators_spin = getattr(self, 'n_estimators_spin', None)
@@ -754,7 +962,7 @@ class TrainingTab(QWidget):
                 update_progress(f"Fetching {ticker}...", 10 + (i * 20 // len(tickers)))
                 data = fetcher.fetch(ticker, period=period)
                 if data is not None and not data.empty:
-                    data = indicators.add_all(data)
+                    data = indicators.add_all(data, config=feature_config)
                     data['label'] = labeler.create_labels(data)
                     all_data.append(data)
 
@@ -852,12 +1060,78 @@ class TrainingTab(QWidget):
                 feature_names = feature_cols[:10]
                 feature_importance = None
 
-            update_progress("Saving model...", 95)
+            update_progress("Saving model & logging to MLflow...", 95)
 
-            # Save model
+            # Save model with timestamp for versioning
+            from datetime import datetime
+            from ..services import MLflowTracker
+
             Path("models").mkdir(exist_ok=True)
-            model_filename = model_type.lower().replace(" ", "_")
-            model.save(Path(f"models/{model_filename}_model.joblib"))
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            model_filename = f"{model_type.lower().replace(' ', '_')}_{timestamp}"
+            model_path = Path(f"models/{model_filename}.joblib")
+
+            # Save model with metrics
+            model_metrics = {
+                "accuracy": accuracy,
+                "precision": precision,
+                "recall": recall,
+                "f1": f1,
+                "auc": auc
+            }
+            model.save(model_path, metrics=model_metrics)
+
+            # Log to MLflow
+            try:
+                tracker = MLflowTracker()
+                run_name = f"{model_type}_{timestamp}"
+                tracker.start_run(run_name=run_name)
+
+                # Log parameters
+                params = {
+                    "model_type": model_type,
+                    "tickers": tickers_text,
+                    "period": period,
+                    "train_samples": len(X_train),
+                    "test_samples": len(X_test),
+                    "n_features": len(feature_cols),
+                }
+                if model_type == "Random Forest":
+                    params["n_estimators"] = n_estimators
+                    params["max_depth"] = max_depth
+                elif model_type == "XGBoost":
+                    params["n_estimators"] = n_estimators
+                    params["max_depth"] = max_depth
+                    params["learning_rate"] = learning_rate
+                elif model_type == "LSTM":
+                    params["hidden_size"] = hidden_size
+                    params["num_layers"] = num_layers
+                    params["epochs"] = epochs
+                    params["learning_rate"] = learning_rate
+
+                tracker.log_params(params)
+
+                # Log feature config
+                tracker.log_feature_config(feature_config)
+
+                # Log metrics
+                metrics = {
+                    "accuracy": accuracy,
+                    "precision": precision,
+                    "recall": recall,
+                    "f1_score": f1,
+                }
+                if auc is not None:
+                    metrics["auc"] = auc
+                tracker.log_metrics(metrics)
+
+                # Log model artifact path
+                import mlflow
+                mlflow.log_artifact(str(model_path))
+
+                tracker.end_run()
+            except Exception as e:
+                print(f"MLflow logging error (non-fatal): {e}")
 
             return {
                 'samples': len(combined),
@@ -891,6 +1165,9 @@ class TrainingTab(QWidget):
 
         samples = result['samples']
         self.status_label.setText(f"Training complete! {samples} samples processed")
+
+        # Signal that training is complete so model list can refresh
+        self.training_complete.emit()
 
         # Update metric displays
         self.metric_displays["Accuracy"].setText(f"{result['accuracy']:.1%}")
@@ -971,6 +1248,7 @@ class BacktestTab(QWidget):
     def __init__(self):
         super().__init__()
         self.worker = None
+        self._current_model = None  # Set by global selector
         self.setup_ui()
 
     def setup_ui(self):
@@ -1000,12 +1278,6 @@ class BacktestTab(QWidget):
         self.capital_spin.setPrefix("$")
         config_layout.addWidget(self.capital_spin)
 
-        config_layout.addWidget(QLabel("Model"))
-        self.model_combo = QComboBox()
-        self.model_combo.addItem("-- Select Model --")
-        config_layout.addWidget(self.model_combo)
-        self.refresh_model_list()
-
         self.run_btn = QPushButton("Run Backtest")
         self.run_btn.clicked.connect(self.on_run)
         config_layout.addWidget(self.run_btn)
@@ -1020,51 +1292,69 @@ class BacktestTab(QWidget):
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
 
-        equity_group = QGroupBox("EQUITY CURVE")
-        equity_layout = QVBoxLayout(equity_group)
-        self.equity_chart = create_chart_canvas(self, width=8, height=4)
-        equity_layout.addWidget(self.equity_chart)
-        right_layout.addWidget(equity_group)
-
+        # Performance metrics at top
         metrics_group = QGroupBox("PERFORMANCE METRICS")
         metrics_layout = QHBoxLayout(metrics_group)
         self.metric_labels = {}
         for name in ["Return", "Sharpe", "Drawdown", "Win Rate", "Trades"]:
             frame = QGroupBox(name.upper())
-            frame.setFixedHeight(80)
+            frame.setFixedHeight(75)
             frame_layout = QVBoxLayout(frame)
             label = QLabel("--")
             label.setStyleSheet("color: #6E7681; font-size: 14px; font-weight: bold;")
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             frame_layout.addWidget(label)
             self.metric_labels[name] = label
             metrics_layout.addWidget(frame)
         right_layout.addWidget(metrics_group)
 
+        # Middle section: equity curve and trade history side by side
+        middle_layout = QHBoxLayout()
+
+        # Equity curve (left)
+        equity_group = QGroupBox("EQUITY CURVE")
+        equity_layout = QVBoxLayout(equity_group)
+        self.equity_chart = create_chart_canvas(self, width=5, height=3)
+        equity_layout.addWidget(self.equity_chart)
+        middle_layout.addWidget(equity_group, 3)
+
+        # Trade history (right)
+        trades_group = QGroupBox("TRADE HISTORY")
+        trades_layout = QVBoxLayout(trades_group)
+
+        self.trades_table = QTableWidget()
+        self.trades_table.setColumnCount(6)
+        self.trades_table.setHorizontalHeaderLabels(["Type", "Entry", "Exit", "Entry $", "Exit $", "P&L"])
+        self.trades_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.trades_table.verticalHeader().setVisible(False)
+        self.trades_table.setStyleSheet("""
+            QTableWidget {
+                background-color: #161B22;
+                border: 1px solid #30363D;
+                font-size: 11px;
+            }
+            QTableWidget::item {
+                padding: 4px;
+            }
+            QHeaderView::section {
+                background-color: #21262D;
+                color: #8B949E;
+                padding: 6px;
+                border: none;
+                font-size: 10px;
+            }
+        """)
+        trades_layout.addWidget(self.trades_table)
+        middle_layout.addWidget(trades_group, 2)
+
+        right_layout.addLayout(middle_layout)
+
         layout.addWidget(left_panel)
         layout.addWidget(right_panel, 1)
 
-    def refresh_model_list(self):
-        """Populate model dropdown from registry."""
-        from ..services import ModelRegistry
-        registry = ModelRegistry()
-
-        current = self.model_combo.currentText()
-        self.model_combo.clear()
-        self.model_combo.addItem("-- Select Model --")
-
-        for info in registry.list_models():
-            self.model_combo.addItem(f"{info.name} ({info.model_type})", info.name)
-
-        idx = self.model_combo.findText(current)
-        if idx >= 0:
-            self.model_combo.setCurrentIndex(idx)
-
     def set_model(self, model_name: str):
-        """Set the selected model by name."""
-        for i in range(self.model_combo.count()):
-            if self.model_combo.itemData(i) == model_name:
-                self.model_combo.setCurrentIndex(i)
-                break
+        """Set the active model (called from global selector)."""
+        self._current_model = model_name if model_name else None
 
     def on_run(self):
         ticker = self.ticker_input.text().strip().upper()
@@ -1074,7 +1364,7 @@ class BacktestTab(QWidget):
         self.status_label.setText("Running backtest...")
         self.run_btn.setEnabled(False)
 
-        model_name = self.model_combo.currentData()
+        model_name = self._current_model
         period = self.period_combo.currentText()
         capital = self.capital_spin.value()
 
@@ -1152,10 +1442,100 @@ class BacktestTab(QWidget):
         self.metric_labels["Win Rate"].setText(f"{result.win_rate:.1%}")
         self.metric_labels["Trades"].setText(str(result.total_trades))
         self.equity_chart.axes.clear()
-        self.equity_chart.axes.plot(result.equity_curve, color='#00D4AA')
-        self.equity_chart.axes.fill_between(range(len(result.equity_curve)), result.equity_curve, alpha=0.3, color='#00D4AA')
+
+        # Plot equity curve with proper datetime handling
+        equity = result.equity_curve
+        dates = equity.index
+        values = equity.values
+
+        self.equity_chart.axes.plot(dates, values, color='#00D4AA', linewidth=1.5)
+        self.equity_chart.axes.fill_between(dates, values, alpha=0.2, color='#00D4AA')
+
+        # Add trade markers
+        trades_df = result.trades
+        if len(trades_df) > 0:
+            for _, trade in trades_df.iterrows():
+                entry_date = trade['entry_date']
+                exit_date = trade['exit_date']
+                is_long = trade['position'] == 'long'
+
+                # Get equity values at entry/exit (approximate by finding nearest date)
+                try:
+                    entry_equity = equity.loc[entry_date] if entry_date in equity.index else equity.iloc[equity.index.get_indexer([entry_date], method='nearest')[0]]
+                    exit_equity = equity.loc[exit_date] if exit_date in equity.index else equity.iloc[equity.index.get_indexer([exit_date], method='nearest')[0]]
+                except:
+                    continue
+
+                # Entry marker: triangle up for long, down for short
+                entry_marker = '^' if is_long else 'v'
+                entry_color = '#3FB950' if is_long else '#F85149'
+                self.equity_chart.axes.scatter([entry_date], [entry_equity],
+                    marker=entry_marker, color=entry_color, s=80, zorder=5, edgecolors='white', linewidths=0.5)
+
+                # Exit marker: square
+                exit_color = '#3FB950' if trade['pnl'] > 0 else '#F85149'
+                self.equity_chart.axes.scatter([exit_date], [exit_equity],
+                    marker='s', color=exit_color, s=50, zorder=5, edgecolors='white', linewidths=0.5)
+
+        # Style the chart
         self.equity_chart.axes.set_facecolor('#0D1117')
+        self.equity_chart.axes.tick_params(colors='#8B949E', labelsize=8)
+
+        # Format y-axis as currency
+        self.equity_chart.axes.yaxis.set_major_formatter(
+            lambda x, p: f'${x:,.0f}'
+        )
+
+        # Rotate x-axis labels for readability
+        for label in self.equity_chart.axes.get_xticklabels():
+            label.set_rotation(30)
+            label.set_ha('right')
+
+        self.equity_chart.fig.tight_layout()
         self.equity_chart.draw()
+
+        # Populate trades table
+        trades_df = result.trades
+        self.trades_table.setRowCount(len(trades_df))
+
+        for i, (_, trade) in enumerate(trades_df.iterrows()):
+            # Type (Long/Short)
+            position = trade['position'].upper()
+            type_item = QTableWidgetItem(position)
+            type_color = "#3FB950" if position == "LONG" else "#F85149"
+            type_item.setForeground(QColor(type_color))
+            self.trades_table.setItem(i, 0, type_item)
+
+            # Entry date
+            entry_date = trade['entry_date']
+            if hasattr(entry_date, 'strftime'):
+                entry_str = entry_date.strftime("%m/%d")
+            else:
+                entry_str = str(entry_date)[:5]
+            self.trades_table.setItem(i, 1, QTableWidgetItem(entry_str))
+
+            # Exit date
+            exit_date = trade['exit_date']
+            if hasattr(exit_date, 'strftime'):
+                exit_str = exit_date.strftime("%m/%d")
+            else:
+                exit_str = str(exit_date)[:5]
+            self.trades_table.setItem(i, 2, QTableWidgetItem(exit_str))
+
+            # Entry price
+            entry_price = QTableWidgetItem(f"${trade['entry_price']:.2f}")
+            self.trades_table.setItem(i, 3, entry_price)
+
+            # Exit price
+            exit_price = QTableWidgetItem(f"${trade['exit_price']:.2f}")
+            self.trades_table.setItem(i, 4, exit_price)
+
+            # P&L with color
+            pnl = trade['pnl']
+            pnl_item = QTableWidgetItem(f"${pnl:+,.0f}")
+            pnl_color = "#3FB950" if pnl > 0 else "#F85149" if pnl < 0 else "#8B949E"
+            pnl_item.setForeground(QColor(pnl_color))
+            self.trades_table.setItem(i, 5, pnl_item)
 
     def on_error(self, error):
         self.run_btn.setEnabled(True)
@@ -1163,7 +1543,7 @@ class BacktestTab(QWidget):
 
 
 class ModelsTab(QWidget):
-    model_selected = pyqtSignal(str)
+    model_selected = pyqtSignal(str)  # Emitted when user wants to activate a model
 
     def __init__(self):
         super().__init__()
@@ -1172,37 +1552,95 @@ class ModelsTab(QWidget):
         self.refresh_models()
 
     def setup_ui(self):
-        layout = QHBoxLayout(self)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(20)
 
-        # Left panel - model list
-        left_panel = QWidget()
-        left_panel.setFixedWidth(350)
-        left_layout = QVBoxLayout(left_panel)
+        # Header
+        header_layout = QHBoxLayout()
+        header = QLabel("MODEL LIBRARY")
+        header.setStyleSheet("color: #FFD93D; font-size: 22px; font-weight: bold;")
+        header_layout.addWidget(header)
 
-        header = QLabel("TRAINED MODELS")
-        header.setStyleSheet("color: #FFD93D; font-size: 18px; font-weight: bold;")
-        left_layout.addWidget(header)
+        header_layout.addStretch()
 
-        # Models table
+        # Hint about global selector
+        hint = QLabel("Select a model from the header dropdown to use it across all tabs")
+        hint.setStyleSheet("color: #6E7681; font-size: 12px;")
+        header_layout.addWidget(hint)
+
+        layout.addLayout(header_layout)
+
+        # Main content area
+        content_layout = QHBoxLayout()
+
+        # Left: Models table
+        table_container = QWidget()
+        table_layout = QVBoxLayout(table_container)
+        table_layout.setContentsMargins(0, 0, 0, 0)
+
         self.models_table = QTableWidget()
-        self.models_table.setColumnCount(3)
-        self.models_table.setHorizontalHeaderLabels(["Name", "Type", "Created"])
-        self.models_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.models_table.setColumnCount(5)
+        self.models_table.setHorizontalHeaderLabels(["Type", "Acc", "F1", "Features", "Created"])
+        self.models_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.models_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        self.models_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self.models_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        self.models_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        self.models_table.setColumnWidth(1, 55)
+        self.models_table.setColumnWidth(2, 55)
+        self.models_table.setColumnWidth(3, 60)
+        self.models_table.setColumnWidth(4, 110)
+        self.models_table.verticalHeader().setVisible(False)  # Hide row numbers
         self.models_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.models_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.models_table.setShowGrid(False)
+        self.models_table.setAlternatingRowColors(False)  # Disable for consistent selection
+        self.models_table.setStyleSheet("""
+            QTableWidget {
+                background-color: #161B22;
+                border: 1px solid #30363D;
+                border-radius: 8px;
+            }
+            QTableWidget::item {
+                padding: 12px 8px;
+                border-bottom: 1px solid #21262D;
+                background-color: #161B22;
+            }
+            QTableWidget::item:selected {
+                background-color: #1F6FEB;
+                color: #FFFFFF;
+            }
+            QTableWidget::item:hover {
+                background-color: #21262D;
+            }
+        """)
         self.models_table.selectionModel().selectionChanged.connect(self.on_selection_changed)
-        left_layout.addWidget(self.models_table)
+        table_layout.addWidget(self.models_table)
 
-        # Buttons
+        # Buttons below table
         buttons_layout = QHBoxLayout()
+        buttons_layout.addStretch()
+
         self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #21262D;
+                border: 1px solid #30363D;
+                padding: 8px 16px;
+            }
+            QPushButton:hover {
+                background-color: #30363D;
+            }
+        """)
         self.refresh_btn.clicked.connect(self.refresh_models)
         buttons_layout.addWidget(self.refresh_btn)
 
-        self.delete_btn = QPushButton("Delete")
+        self.delete_btn = QPushButton("Delete Selected")
         self.delete_btn.setStyleSheet("""
             QPushButton {
                 background-color: #DA3633;
+                padding: 8px 16px;
             }
             QPushButton:hover {
                 background-color: #F85149;
@@ -1215,42 +1653,62 @@ class ModelsTab(QWidget):
         self.delete_btn.setEnabled(False)
         self.delete_btn.clicked.connect(self.on_delete)
         buttons_layout.addWidget(self.delete_btn)
-        left_layout.addLayout(buttons_layout)
 
-        layout.addWidget(left_panel)
+        table_layout.addLayout(buttons_layout)
+        content_layout.addWidget(table_container, 2)
 
-        # Right panel - model details
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
+        # Right: Details panel
+        details_panel = QGroupBox("MODEL DETAILS")
+        details_panel.setStyleSheet("""
+            QGroupBox {
+                background-color: #161B22;
+                border: 1px solid #30363D;
+                border-radius: 8px;
+                padding: 20px;
+                margin-top: 10px;
+            }
+            QGroupBox::title {
+                color: #8B949E;
+                subcontrol-origin: margin;
+                left: 15px;
+                padding: 0 8px;
+            }
+        """)
+        details_layout = QVBoxLayout(details_panel)
+        details_layout.setSpacing(15)
 
-        details_group = QGroupBox("MODEL DETAILS")
-        details_layout = QVBoxLayout(details_group)
-
-        # Detail labels
         self.detail_labels = {}
-        for field in ["Name", "Type", "Features", "Created", "Path"]:
-            row_layout = QHBoxLayout()
-            label = QLabel(f"{field}:")
-            label.setStyleSheet("color: #8B949E; font-weight: bold;")
-            label.setFixedWidth(80)
-            row_layout.addWidget(label)
+        for field, icon in [("Type", "◆"), ("Features", "⊞"), ("Created", "◷"), ("File", "◇")]:
+            row = QHBoxLayout()
 
-            value_label = QLabel("--")
-            value_label.setStyleSheet("color: #E6EDF3;")
+            icon_label = QLabel(icon)
+            icon_label.setStyleSheet("color: #58A6FF; font-size: 14px;")
+            icon_label.setFixedWidth(25)
+            row.addWidget(icon_label)
+
+            field_label = QLabel(field)
+            field_label.setStyleSheet("color: #8B949E; font-size: 12px;")
+            field_label.setFixedWidth(70)
+            row.addWidget(field_label)
+
+            value_label = QLabel("—")
+            value_label.setStyleSheet("color: #E6EDF3; font-size: 13px;")
             value_label.setWordWrap(True)
-            row_layout.addWidget(value_label, 1)
+            row.addWidget(value_label, 1)
+
             self.detail_labels[field] = value_label
-            details_layout.addLayout(row_layout)
+            details_layout.addLayout(row)
 
         details_layout.addStretch()
 
-        # Use model button
-        self.use_btn = QPushButton("Use This Model")
+        # Activate button
+        self.use_btn = QPushButton("Set as Active Model")
         self.use_btn.setStyleSheet("""
             QPushButton {
                 background-color: #238636;
-                font-size: 14px;
-                padding: 15px 30px;
+                font-size: 13px;
+                padding: 12px 24px;
+                border-radius: 6px;
             }
             QPushButton:hover {
                 background-color: #2EA043;
@@ -1264,8 +1722,9 @@ class ModelsTab(QWidget):
         self.use_btn.clicked.connect(self.on_use_model)
         details_layout.addWidget(self.use_btn)
 
-        right_layout.addWidget(details_group)
-        layout.addWidget(right_panel, 1)
+        content_layout.addWidget(details_panel, 1)
+
+        layout.addLayout(content_layout)
 
     def refresh_models(self):
         """Load models from registry and populate table."""
@@ -1279,18 +1738,57 @@ class ModelsTab(QWidget):
 
         self.models_table.setRowCount(len(models))
         for i, model in enumerate(models):
-            name_item = QTableWidgetItem(model.name)
-            name_item.setData(Qt.ItemDataRole.UserRole, model.name)
-            self.models_table.setItem(i, 0, name_item)
-            self.models_table.setItem(i, 1, QTableWidgetItem(model.model_type))
-            self.models_table.setItem(i, 2, QTableWidgetItem(model.created.strftime("%Y-%m-%d %H:%M")))
+            # Type column with colored indicator
+            type_item = QTableWidgetItem(f"  {model.model_type}")
+            type_item.setData(Qt.ItemDataRole.UserRole, model.name)
+
+            # Color by type - muted colors that work with selection
+            type_colors = {
+                "Random Forest": "#3FB950",
+                "XGBoost": "#A371F7",
+                "LSTM": "#58A6FF"
+            }
+            color = type_colors.get(model.model_type, "#8B949E")
+            type_item.setForeground(QColor(color))
+            self.models_table.setItem(i, 0, type_item)
+
+            # Accuracy
+            acc = model.metrics.get("accuracy") if model.metrics else None
+            acc_str = f"{acc:.0%}" if acc is not None else "—"
+            acc_item = QTableWidgetItem(acc_str)
+            acc_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if acc is not None and acc >= 0.6:
+                acc_item.setForeground(QColor("#3FB950"))
+            self.models_table.setItem(i, 1, acc_item)
+
+            # F1 Score
+            f1 = model.metrics.get("f1") if model.metrics else None
+            f1_str = f"{f1:.0%}" if f1 is not None else "—"
+            f1_item = QTableWidgetItem(f1_str)
+            f1_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if f1 is not None and f1 >= 0.5:
+                f1_item.setForeground(QColor("#3FB950"))
+            self.models_table.setItem(i, 2, f1_item)
+
+            # Features count
+            features_item = QTableWidgetItem(str(model.feature_count))
+            features_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.models_table.setItem(i, 3, features_item)
+
+            # Created date
+            date_str = model.created.strftime("%b %d, %H:%M")
+            date_item = QTableWidgetItem(date_str)
+            date_item.setForeground(QColor("#8B949E"))
+            self.models_table.setItem(i, 4, date_item)
+
+            self.models_table.setRowHeight(i, 40)
 
         self.clear_details()
 
     def clear_details(self):
         """Reset all detail labels to default."""
         for label in self.detail_labels.values():
-            label.setText("--")
+            label.setText("—")
         self.delete_btn.setEnabled(False)
         self.use_btn.setEnabled(False)
 
@@ -1302,23 +1800,22 @@ class ModelsTab(QWidget):
             return
 
         row = self.models_table.currentRow()
-        name_item = self.models_table.item(row, 0)
-        if not name_item:
+        type_item = self.models_table.item(row, 0)
+        if not type_item:
             self.clear_details()
             return
 
-        model_name = name_item.data(Qt.ItemDataRole.UserRole)
+        model_name = type_item.data(Qt.ItemDataRole.UserRole)
         if not model_name or not self.registry:
             self.clear_details()
             return
 
         try:
             info = self.registry.get_model_info(model_name)
-            self.detail_labels["Name"].setText(info.name)
             self.detail_labels["Type"].setText(info.model_type)
-            self.detail_labels["Features"].setText(str(info.feature_count))
-            self.detail_labels["Created"].setText(info.created.strftime("%Y-%m-%d %H:%M:%S"))
-            self.detail_labels["Path"].setText(str(info.path))
+            self.detail_labels["Features"].setText(f"{info.feature_count} features")
+            self.detail_labels["Created"].setText(info.created.strftime("%B %d, %Y at %H:%M"))
+            self.detail_labels["File"].setText(info.path.name)
             self.delete_btn.setEnabled(True)
             self.use_btn.setEnabled(True)
         except KeyError:
@@ -1330,18 +1827,24 @@ class ModelsTab(QWidget):
         if row < 0:
             return
 
-        name_item = self.models_table.item(row, 0)
-        if not name_item or not self.registry:
+        type_item = self.models_table.item(row, 0)
+        if not type_item or not self.registry:
             return
 
-        model_name = name_item.data(Qt.ItemDataRole.UserRole)
+        model_name = type_item.data(Qt.ItemDataRole.UserRole)
         if not model_name:
             return
+
+        try:
+            info = self.registry.get_model_info(model_name)
+            display_name = f"{info.model_type} ({info.created.strftime('%b %d, %H:%M')})"
+        except KeyError:
+            display_name = model_name
 
         # Confirm deletion
         reply = QMessageBox.question(
             self, "Delete Model",
-            f"Are you sure you want to delete '{model_name}'?",
+            f"Delete this model?\n\n{display_name}\n\nThis cannot be undone.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply != QMessageBox.StandardButton.Yes:
@@ -1351,28 +1854,33 @@ class ModelsTab(QWidget):
             self.registry.delete_model(model_name)
             self.refresh_models()
         except KeyError:
-            QMessageBox.warning(self, "Error", f"Failed to delete model '{model_name}'")
+            QMessageBox.warning(self, "Error", f"Failed to delete model")
 
     def on_use_model(self):
-        """Emit signal when user wants to use the selected model."""
+        """Emit signal when user wants to activate the selected model."""
         row = self.models_table.currentRow()
         if row < 0:
             return
 
-        name_item = self.models_table.item(row, 0)
-        if not name_item:
+        type_item = self.models_table.item(row, 0)
+        if not type_item:
             return
 
-        model_name = name_item.data(Qt.ItemDataRole.UserRole)
+        model_name = type_item.data(Qt.ItemDataRole.UserRole)
         if model_name:
             self.model_selected.emit(model_name)
 
 
 class SwingTraderApp(QMainWindow):
+    """Main application window with global model selector."""
+
+    model_changed = pyqtSignal(str)  # Emitted when global model selection changes
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Swing Trader")
         self.setMinimumSize(1400, 900)
+        self._current_model = None
         self.setup_ui()
 
     def setup_ui(self):
@@ -1381,19 +1889,64 @@ class SwingTraderApp(QMainWindow):
         layout = QVBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
 
+        # Header with global model selector
         header = QWidget()
-        header.setStyleSheet("background-color: #0D1117; padding: 10px;")
+        header.setStyleSheet("background-color: #0D1117;")
+        header.setFixedHeight(60)
         header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(20, 10, 20, 10)
+
+        # Left side: title
         title = QLabel("SWING TRADER")
         title.setStyleSheet("color: #FFD93D; font-size: 20px; font-weight: bold;")
         header_layout.addWidget(title)
-        sep = QLabel("|")
-        sep.setStyleSheet("color: #30363D; margin: 0 15px;")
-        header_layout.addWidget(sep)
-        subtitle = QLabel("ML Trading Signals")
-        subtitle.setStyleSheet("color: #8B949E;")
-        header_layout.addWidget(subtitle)
+
         header_layout.addStretch()
+
+        # Right side: Global model selector
+        model_label = QLabel("ACTIVE MODEL")
+        model_label.setStyleSheet("color: #6E7681; font-size: 11px; margin-right: 8px;")
+        header_layout.addWidget(model_label)
+
+        self.global_model_combo = QComboBox()
+        self.global_model_combo.setMinimumWidth(280)
+        self.global_model_combo.setStyleSheet("""
+            QComboBox {
+                background-color: #21262D;
+                border: 2px solid #30363D;
+                border-radius: 6px;
+                padding: 8px 12px;
+                color: #E6EDF3;
+                font-size: 13px;
+                font-weight: bold;
+            }
+            QComboBox:hover {
+                border-color: #58A6FF;
+            }
+            QComboBox:focus {
+                border-color: #58A6FF;
+            }
+            QComboBox::drop-down {
+                border: none;
+                padding-right: 10px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 6px solid #8B949E;
+                margin-right: 10px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #21262D;
+                border: 1px solid #30363D;
+                selection-background-color: #388BFD;
+                color: #E6EDF3;
+            }
+        """)
+        self.global_model_combo.currentIndexChanged.connect(self._on_global_model_changed)
+        header_layout.addWidget(self.global_model_combo)
+
         layout.addWidget(header)
 
         self.tabs = QTabWidget()
@@ -1409,27 +1962,78 @@ class SwingTraderApp(QMainWindow):
         self.tabs.addTab(self.backtest_tab, "  Backtest  ")
         self.tabs.addTab(self.models_tab, "  Models  ")
 
-        # Connect model selection from Models tab to other tabs
-        self.models_tab.model_selected.connect(self.on_model_selected)
+        # Connect global model changes to tabs
+        self.model_changed.connect(self.signals_tab.set_model)
+        self.model_changed.connect(self.backtest_tab.set_model)
 
-        # Refresh model lists when switching to relevant tabs
-        self.tabs.currentChanged.connect(self.on_tab_changed)
+        # Refresh global model list when switching tabs (catches new models from training)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+
+        # Connect training completion to refresh models
+        self.training_tab.training_complete.connect(self.refresh_global_models)
+
+        # Connect Models tab selection to global selector
+        self.models_tab.model_selected.connect(self.set_active_model)
 
         layout.addWidget(self.tabs)
 
-    def on_model_selected(self, model_name: str):
-        """Handle model selection from Models tab."""
-        self.signals_tab.set_model(model_name)
-        self.backtest_tab.set_model(model_name)
-        self.tabs.setCurrentWidget(self.signals_tab)
+        # Initial load of models
+        self.refresh_global_models()
 
-    def on_tab_changed(self, index: int):
-        """Refresh model lists when switching tabs."""
+    def refresh_global_models(self):
+        """Refresh the global model dropdown."""
+        from ..services import ModelRegistry
+        registry = ModelRegistry()
+
+        current_data = self.global_model_combo.currentData()
+        self.global_model_combo.blockSignals(True)
+        self.global_model_combo.clear()
+
+        self.global_model_combo.addItem("No model selected", None)
+
+        models = registry.list_models()
+        # Sort by created date (newest first)
+        models.sort(key=lambda m: m.created, reverse=True)
+
+        for info in models:
+            # Format: "XGBoost · Jan 31, 14:30 · 17 features"
+            date_str = info.created.strftime("%b %d, %H:%M")
+            display = f"{info.model_type}  ·  {date_str}  ·  {info.feature_count} features"
+            self.global_model_combo.addItem(display, info.name)
+
+        # Restore previous selection if possible
+        if current_data:
+            for i in range(self.global_model_combo.count()):
+                if self.global_model_combo.itemData(i) == current_data:
+                    self.global_model_combo.setCurrentIndex(i)
+                    break
+
+        self.global_model_combo.blockSignals(False)
+
+    def set_active_model(self, model_name: str):
+        """Set the active model by name (called from Models tab)."""
+        for i in range(self.global_model_combo.count()):
+            if self.global_model_combo.itemData(i) == model_name:
+                self.global_model_combo.setCurrentIndex(i)
+                break
+
+    def _on_global_model_changed(self, index: int):
+        """Handle global model selection change."""
+        model_name = self.global_model_combo.currentData()
+        self._current_model = model_name
+        self.model_changed.emit(model_name if model_name else "")
+
+    def _on_tab_changed(self, index: int):
+        """Handle tab changes - refresh models and model lists."""
+        self.refresh_global_models()
+
         widget = self.tabs.widget(index)
-        if hasattr(widget, 'refresh_model_list'):
-            widget.refresh_model_list()
         if hasattr(widget, 'refresh_models'):
             widget.refresh_models()
+
+    def get_active_model(self) -> str | None:
+        """Return the currently selected model name."""
+        return self._current_model
 
 
 def main():

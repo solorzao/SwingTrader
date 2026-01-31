@@ -15,6 +15,11 @@ class ModelInfo:
     path: Path
     created: datetime
     feature_count: int
+    metrics: dict = None  # accuracy, f1, precision, recall, auc
+
+    def __post_init__(self):
+        if self.metrics is None:
+            self.metrics = {}
 
 
 class ModelRegistry:
@@ -46,9 +51,11 @@ class ModelRegistry:
         try:
             data = joblib.load(path)
 
-            name = data.get("name", path.stem)
+            # Use filename as unique identifier (not internal name which can duplicate)
+            name = path.stem
             feature_columns = data.get("feature_columns", [])
             feature_count = len(feature_columns)
+            metrics = data.get("metrics", {})
 
             # Detect model type from filename
             model_type = self._detect_model_type(path.stem)
@@ -61,7 +68,8 @@ class ModelRegistry:
                 model_type=model_type,
                 path=path,
                 created=created,
-                feature_count=feature_count
+                feature_count=feature_count,
+                metrics=metrics
             )
 
             self._models[name] = info

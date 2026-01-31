@@ -76,11 +76,11 @@ class BacktestEngine:
                     exit_price = price * (1 - self.slippage if position == 1 else 1 + self.slippage)
 
                     if position == 1:
-                        pnl = (exit_price / entry_price - 1) * capital * self.position_size
+                        pnl = (exit_price / entry_price - 1) * position_capital * self.position_size
                     else:
-                        pnl = (entry_price / exit_price - 1) * capital * self.position_size
+                        pnl = (entry_price / exit_price - 1) * position_capital * self.position_size
 
-                    pnl -= capital * self.position_size * self.commission * 2
+                    pnl -= position_capital * self.position_size * self.commission * 2
                     capital += pnl
 
                     trades.append({
@@ -98,8 +98,18 @@ class BacktestEngine:
                 position = signal
                 entry_price = price * (1 + self.slippage if signal == 1 else 1 - self.slippage)
                 entry_date = dates[i]
+                position_capital = capital  # Capital at time of entry
 
-            equity.append(capital)
+            # Calculate mark-to-market equity (including unrealized P&L)
+            if position != 0:
+                # Calculate unrealized P&L based on current price
+                if position == 1:  # Long
+                    unrealized_pnl = (price / entry_price - 1) * position_capital * self.position_size
+                else:  # Short
+                    unrealized_pnl = (entry_price / price - 1) * position_capital * self.position_size
+                equity.append(capital + unrealized_pnl)
+            else:
+                equity.append(capital)
 
         equity_curve = pd.Series(equity, index=dates)
         trades_df = pd.DataFrame(trades) if trades else pd.DataFrame(

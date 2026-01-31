@@ -28,6 +28,7 @@ wheels/
 # MLflow
 mlruns/
 mlartifacts/
+artifacts/
 
 # Optuna
 *.db
@@ -42,8 +43,8 @@ mlartifacts/
 .DS_Store
 Thumbs.db
 
-# Models
-models/
+# Trained models (top-level directory only)
+/models/
 *.joblib
 *.pkl
 

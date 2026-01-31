@@ -19,6 +19,7 @@ class BaseModel(ABC):
         self.model = None
         self.feature_columns: list[str] = []
         self.is_fitted = False
+        self.metrics: dict = {}  # Store training metrics
 
     @abstractmethod
     def fit(
@@ -40,14 +41,17 @@ class BaseModel(ABC):
         """Predict probabilities for each class."""
         pass
 
-    def save(self, path: Path) -> None:
-        """Save model to disk."""
+    def save(self, path: Path, metrics: dict = None) -> None:
+        """Save model to disk with optional metrics."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
+        if metrics:
+            self.metrics = metrics
         joblib.dump({
             "model": self.model,
             "feature_columns": self.feature_columns,
-            "name": self.name
+            "name": self.name,
+            "metrics": self.metrics
         }, path)
 
     def load(self, path: Path) -> "BaseModel":
@@ -56,6 +60,7 @@ class BaseModel(ABC):
         self.model = data["model"]
         self.feature_columns = data["feature_columns"]
         self.name = data["name"]
+        self.metrics = data.get("metrics", {})
         self.is_fitted = True
         return self
 
