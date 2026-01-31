@@ -1593,7 +1593,7 @@ class ModelsTab(QWidget):
         self.models_table.setColumnWidth(4, 110)
         self.models_table.verticalHeader().setVisible(False)  # Hide row numbers
         self.models_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.models_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.models_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.models_table.setShowGrid(False)
         self.models_table.setAlternatingRowColors(False)  # Disable for consistent selection
         self.models_table.setStyleSheet("""
@@ -1790,16 +1790,29 @@ class ModelsTab(QWidget):
         for label in self.detail_labels.values():
             label.setText("—")
         self.delete_btn.setEnabled(False)
+        self.delete_btn.setText("Delete Selected")
         self.use_btn.setEnabled(False)
 
     def on_selection_changed(self):
         """Update details panel when selection changes."""
-        selected = self.models_table.selectedItems()
-        if not selected:
+        selected_rows = set(item.row() for item in self.models_table.selectedItems())
+        num_selected = len(selected_rows)
+
+        if num_selected == 0:
             self.clear_details()
+            self.delete_btn.setText("Delete Selected")
             return
 
-        row = self.models_table.currentRow()
+        # Update delete button text
+        if num_selected == 1:
+            self.delete_btn.setText("Delete Selected")
+        else:
+            self.delete_btn.setText(f"Delete Selected ({num_selected})")
+
+        self.delete_btn.setEnabled(True)
+
+        # Show details for single selection, or first selected for multi
+        row = min(selected_rows)
         type_item = self.models_table.item(row, 0)
         if not type_item:
             self.clear_details()
@@ -1809,6 +1822,9 @@ class ModelsTab(QWidget):
         if not model_name or not self.registry:
             self.clear_details()
             return
+
+        # Disable "Set as Active" button for multi-select
+        self.use_btn.setEnabled(num_selected == 1)
 
         try:
             info = self.registry.get_model_info(model_name)
@@ -1822,39 +1838,59 @@ class ModelsTab(QWidget):
             self.clear_details()
 
     def on_delete(self):
-        """Delete the selected model."""
-        row = self.models_table.currentRow()
-        if row < 0:
+        """Delete the selected model(s)."""
+        selected_rows = sorted(set(item.row() for item in self.models_table.selectedItems()), reverse=True)
+        if not selected_rows or not self.registry:
             return
 
-        type_item = self.models_table.item(row, 0)
-        if not type_item or not self.registry:
+        # Collect model names to delete
+        models_to_delete = []
+        for row in selected_rows:
+            type_item = self.models_table.item(row, 0)
+            if type_item:
+                model_name = type_item.data(Qt.ItemDataRole.UserRole)
+                if model_name:
+                    try:
+                        info = self.registry.get_model_info(model_name)
+                        display_name = f"{info.model_type} ({info.created.strftime('%b %d, %H:%M')})"
+                    except KeyError:
+                        display_name = model_name
+                    models_to_delete.append((model_name, display_name))
+
+        if not models_to_delete:
             return
 
-        model_name = type_item.data(Qt.ItemDataRole.UserRole)
-        if not model_name:
-            return
-
-        try:
-            info = self.registry.get_model_info(model_name)
-            display_name = f"{info.model_type} ({info.created.strftime('%b %d, %H:%M')})"
-        except KeyError:
-            display_name = model_name
+        # Build confirmation message
+        if len(models_to_delete) == 1:
+            msg = f"Delete this model?\n\n{models_to_delete[0][1]}\n\nThis cannot be undone."
+        else:
+            model_list = "\n".join(f"  • {name}" for _, name in models_to_delete[:5])
+            if len(models_to_delete) > 5:
+                model_list += f"\n  ... and {len(models_to_delete) - 5} more"
+            msg = f"Delete {len(models_to_delete)} models?\n\n{model_list}\n\nThis cannot be undone."
 
         # Confirm deletion
         reply = QMessageBox.question(
-            self, "Delete Model",
-            f"Delete this model?\n\n{display_name}\n\nThis cannot be undone.",
+            self, "Delete Model" if len(models_to_delete) == 1 else "Delete Models",
+            msg,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        try:
-            self.registry.delete_model(model_name)
-            self.refresh_models()
-        except KeyError:
-            QMessageBox.warning(self, "Error", f"Failed to delete model")
+        # Delete all selected models
+        deleted = 0
+        for model_name, _ in models_to_delete:
+            try:
+                self.registry.delete_model(model_name)
+                deleted += 1
+            except KeyError:
+                pass
+
+        self.refresh_models()
+
+        if deleted < len(models_to_delete):
+            QMessageBox.warning(self, "Warning", f"Deleted {deleted} of {len(models_to_delete)} models")
 
     def on_use_model(self):
         """Emit signal when user wants to activate the selected model."""
