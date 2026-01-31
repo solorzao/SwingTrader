@@ -384,9 +384,13 @@ class TrainingTab(QWidget):
 
         # GPU acceleration checkbox
         self.gpu_checkbox = QCheckBox("Use GPU Acceleration")
-        self.gpu_checkbox.setEnabled(self.check_gpu_available())
-        if not self.gpu_checkbox.isEnabled():
-            self.gpu_checkbox.setToolTip("No CUDA GPU detected")
+        gpu_available = self.check_gpu_available()
+        self.gpu_checkbox.setEnabled(gpu_available)
+        if gpu_available:
+            self.gpu_checkbox.setToolTip("Enable CUDA GPU acceleration for faster training")
+        else:
+            self.gpu_checkbox.setToolTip("GPU not available. Install PyTorch with CUDA:\npip install torch --index-url https://download.pytorch.org/whl/cu121")
+            self.gpu_checkbox.setStyleSheet("color: #6E7681;")
         left_layout.addWidget(self.gpu_checkbox)
 
         self.train_btn = QPushButton("Start Training")
@@ -547,25 +551,27 @@ class TrainingTab(QWidget):
         self.train_btn.setEnabled(False)
         self.progress_bar.setValue(0)
 
-        # Capture hyperparameters from UI
+        # Capture ALL UI values before starting thread (Qt widgets can't be accessed from threads)
         model_type = self.model_combo.currentText()
         use_gpu = self.gpu_checkbox.isChecked() and self.gpu_checkbox.isEnabled()
+        tickers_text = self.tickers_input.text()
+        period = self.period_combo.currentText()
 
-        # Common params
-        n_estimators = getattr(self, 'n_estimators_spin', None)
-        n_estimators = n_estimators.value() if n_estimators else 100
-        max_depth = getattr(self, 'max_depth_spin', None)
-        max_depth = max_depth.value() if max_depth else 10
-        learning_rate = getattr(self, 'learning_rate_spin', None)
-        learning_rate = learning_rate.value() if learning_rate else 0.1
+        # Common params (may not exist depending on model type)
+        n_estimators_spin = getattr(self, 'n_estimators_spin', None)
+        n_estimators = n_estimators_spin.value() if n_estimators_spin else 100
+        max_depth_spin = getattr(self, 'max_depth_spin', None)
+        max_depth = max_depth_spin.value() if max_depth_spin else 10
+        learning_rate_spin = getattr(self, 'learning_rate_spin', None)
+        learning_rate = learning_rate_spin.value() if learning_rate_spin else 0.1
 
-        # LSTM params
-        hidden_size = getattr(self, 'hidden_size_spin', None)
-        hidden_size = hidden_size.value() if hidden_size else 64
-        num_layers = getattr(self, 'num_layers_spin', None)
-        num_layers = num_layers.value() if num_layers else 2
-        epochs = getattr(self, 'epochs_spin', None)
-        epochs = epochs.value() if epochs else 30
+        # LSTM params (may not exist depending on model type)
+        hidden_size_spin = getattr(self, 'hidden_size_spin', None)
+        hidden_size = hidden_size_spin.value() if hidden_size_spin else 64
+        num_layers_spin = getattr(self, 'num_layers_spin', None)
+        num_layers = num_layers_spin.value() if num_layers_spin else 2
+        epochs_spin = getattr(self, 'epochs_spin', None)
+        epochs = epochs_spin.value() if epochs_spin else 30
 
         def train():
             from ..data.fetcher import StockDataFetcher
@@ -574,14 +580,14 @@ class TrainingTab(QWidget):
             import pandas as pd
             from pathlib import Path
 
-            tickers = [t.strip().upper() for t in self.tickers_input.text().split(",")]
+            tickers = [t.strip().upper() for t in tickers_text.split(",")]
             fetcher = StockDataFetcher()
             indicators = TechnicalIndicators()
             labeler = SignalLabeler()
 
             all_data = []
             for ticker in tickers:
-                data = fetcher.fetch(ticker, period=self.period_combo.currentText())
+                data = fetcher.fetch(ticker, period=period)
                 if data is not None and not data.empty:
                     data = indicators.add_all(data)
                     data['label'] = labeler.create_labels(data)
