@@ -345,7 +345,7 @@ class TrainingTab(QWidget):
         layout = QHBoxLayout(self)
 
         left_panel = QWidget()
-        left_panel.setFixedWidth(340)
+        left_panel.setFixedWidth(380)
         left_layout = QVBoxLayout(left_panel)
 
         train_group = QGroupBox("MODEL TRAINING")
@@ -353,7 +353,8 @@ class TrainingTab(QWidget):
 
         train_layout.addWidget(QLabel("Model Type"))
         self.model_combo = QComboBox()
-        self.model_combo.addItems(["Random Forest", "XGBoost (GPU)", "LSTM (CUDA)", "All Models"])
+        self.model_combo.addItems(["Random Forest", "XGBoost", "LSTM", "All Models"])
+        self.model_combo.currentTextChanged.connect(self.on_model_changed)
         train_layout.addWidget(self.model_combo)
 
         train_layout.addWidget(QLabel("Training Symbols"))
@@ -366,11 +367,17 @@ class TrainingTab(QWidget):
         self.period_combo.setCurrentText("2y")
         train_layout.addWidget(self.period_combo)
 
+        left_layout.addWidget(train_group)
+
+        # Hyperparameters group
+        self.hyperparam_group = QGroupBox("HYPERPARAMETERS")
+        self.hyperparam_layout = QVBoxLayout(self.hyperparam_group)
+        self.setup_rf_hyperparams()
+        left_layout.addWidget(self.hyperparam_group)
+
         self.train_btn = QPushButton("Start Training")
         self.train_btn.clicked.connect(self.on_train)
-        train_layout.addWidget(self.train_btn)
-
-        left_layout.addWidget(train_group)
+        left_layout.addWidget(self.train_btn)
 
         status_group = QGroupBox("STATUS")
         status_layout = QVBoxLayout(status_group)
@@ -396,10 +403,108 @@ class TrainingTab(QWidget):
         layout.addWidget(left_panel)
         layout.addWidget(right_panel, 1)
 
+    def clear_hyperparam_layout(self):
+        while self.hyperparam_layout.count():
+            item = self.hyperparam_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+    def setup_rf_hyperparams(self):
+        self.clear_hyperparam_layout()
+        self.hyperparam_layout.addWidget(QLabel("Number of Trees"))
+        self.n_estimators_spin = QSpinBox()
+        self.n_estimators_spin.setRange(10, 500)
+        self.n_estimators_spin.setValue(100)
+        self.n_estimators_spin.setSingleStep(10)
+        self.hyperparam_layout.addWidget(self.n_estimators_spin)
+
+        self.hyperparam_layout.addWidget(QLabel("Max Depth (0 = unlimited)"))
+        self.max_depth_spin = QSpinBox()
+        self.max_depth_spin.setRange(0, 50)
+        self.max_depth_spin.setValue(10)
+        self.hyperparam_layout.addWidget(self.max_depth_spin)
+
+        self.hyperparam_layout.addWidget(QLabel("Min Samples Split"))
+        self.min_samples_spin = QSpinBox()
+        self.min_samples_spin.setRange(2, 20)
+        self.min_samples_spin.setValue(2)
+        self.hyperparam_layout.addWidget(self.min_samples_spin)
+
+    def setup_xgb_hyperparams(self):
+        self.clear_hyperparam_layout()
+        self.hyperparam_layout.addWidget(QLabel("Number of Rounds"))
+        self.n_estimators_spin = QSpinBox()
+        self.n_estimators_spin.setRange(10, 500)
+        self.n_estimators_spin.setValue(100)
+        self.n_estimators_spin.setSingleStep(10)
+        self.hyperparam_layout.addWidget(self.n_estimators_spin)
+
+        self.hyperparam_layout.addWidget(QLabel("Max Depth"))
+        self.max_depth_spin = QSpinBox()
+        self.max_depth_spin.setRange(1, 15)
+        self.max_depth_spin.setValue(6)
+        self.hyperparam_layout.addWidget(self.max_depth_spin)
+
+        self.hyperparam_layout.addWidget(QLabel("Learning Rate"))
+        self.learning_rate_spin = QDoubleSpinBox()
+        self.learning_rate_spin.setRange(0.01, 1.0)
+        self.learning_rate_spin.setValue(0.1)
+        self.learning_rate_spin.setSingleStep(0.01)
+        self.hyperparam_layout.addWidget(self.learning_rate_spin)
+
+    def setup_lstm_hyperparams(self):
+        self.clear_hyperparam_layout()
+        self.hyperparam_layout.addWidget(QLabel("Hidden Size"))
+        self.hidden_size_spin = QSpinBox()
+        self.hidden_size_spin.setRange(16, 256)
+        self.hidden_size_spin.setValue(64)
+        self.hidden_size_spin.setSingleStep(16)
+        self.hyperparam_layout.addWidget(self.hidden_size_spin)
+
+        self.hyperparam_layout.addWidget(QLabel("Number of Layers"))
+        self.num_layers_spin = QSpinBox()
+        self.num_layers_spin.setRange(1, 4)
+        self.num_layers_spin.setValue(2)
+        self.hyperparam_layout.addWidget(self.num_layers_spin)
+
+        self.hyperparam_layout.addWidget(QLabel("Epochs"))
+        self.epochs_spin = QSpinBox()
+        self.epochs_spin.setRange(5, 100)
+        self.epochs_spin.setValue(30)
+        self.epochs_spin.setSingleStep(5)
+        self.hyperparam_layout.addWidget(self.epochs_spin)
+
+        self.hyperparam_layout.addWidget(QLabel("Learning Rate"))
+        self.learning_rate_spin = QDoubleSpinBox()
+        self.learning_rate_spin.setRange(0.0001, 0.1)
+        self.learning_rate_spin.setValue(0.001)
+        self.learning_rate_spin.setSingleStep(0.0001)
+        self.learning_rate_spin.setDecimals(4)
+        self.hyperparam_layout.addWidget(self.learning_rate_spin)
+
+    def on_model_changed(self, model_name):
+        if model_name == "Random Forest":
+            self.setup_rf_hyperparams()
+        elif model_name == "XGBoost":
+            self.setup_xgb_hyperparams()
+        elif model_name == "LSTM":
+            self.setup_lstm_hyperparams()
+        else:  # All Models
+            self.setup_rf_hyperparams()
+
     def on_train(self):
         self.status_label.setText("Starting training...")
         self.train_btn.setEnabled(False)
         self.progress_bar.setValue(0)
+
+        # Capture hyperparameters from UI
+        model_type = self.model_combo.currentText()
+        n_estimators = getattr(self, 'n_estimators_spin', None)
+        n_estimators = n_estimators.value() if n_estimators else 100
+        max_depth = getattr(self, 'max_depth_spin', None)
+        max_depth = max_depth.value() if max_depth else 10
+        learning_rate = getattr(self, 'learning_rate_spin', None)
+        learning_rate = learning_rate.value() if learning_rate else 0.1
 
         def train():
             from ..data.fetcher import StockDataFetcher
@@ -419,24 +524,30 @@ class TrainingTab(QWidget):
                 data = fetcher.fetch(ticker, period=self.period_combo.currentText())
                 if data is not None and not data.empty:
                     data = indicators.add_all(data)
-                    data = labeler.create_labels(data)
+                    data['label'] = labeler.create_labels(data)
                     all_data.append(data)
 
             if not all_data:
                 return None, 0
 
             combined = pd.concat(all_data, ignore_index=True).dropna()
-            feature_cols = [c for c in combined.columns if c not in
-                          ['Open', 'High', 'Low', 'Close', 'Volume', 'Adj Close', 'label', 'forward_return']]
-            X = combined[feature_cols].values
-            y = combined['label'].values
+            exclude_cols = ['open', 'high', 'low', 'close', 'volume', 'label']
+            feature_cols = [c for c in combined.columns if c not in exclude_cols]
+            X = combined[feature_cols]
+            y = combined['label']
 
-            model = RandomForestModel(n_estimators=100)
-            model.fit(X, y)
-
+            # Split data for training and validation
             from sklearn.model_selection import train_test_split
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
-            accuracy = (model.predict(X_test) == y_test).mean()
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+            # Use hyperparameters from UI
+            md = max_depth if max_depth > 0 else None
+            model = RandomForestModel(n_estimators=n_estimators, max_depth=md)
+            model.fit(X_train, y_train)
+
+            # Calculate accuracy on test set
+            predictions = model.predict(X_test)
+            accuracy = (predictions == y_test.values).mean()
 
             Path("models").mkdir(exist_ok=True)
             model.save(Path("models/random_forest.joblib"))
