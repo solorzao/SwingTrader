@@ -401,11 +401,40 @@ class TrainingTab(QWidget):
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
 
-        chart_group = QGroupBox("TRAINING METRICS")
-        chart_layout = QVBoxLayout(chart_group)
-        self.chart = create_chart_canvas(self, width=8, height=5)
-        chart_layout.addWidget(self.chart)
-        right_layout.addWidget(chart_group)
+        # Metrics summary panel
+        metrics_group = QGroupBox("CLASSIFICATION METRICS")
+        metrics_layout = QHBoxLayout(metrics_group)
+        self.metric_displays = {}
+        for name in ["Accuracy", "Precision", "Recall", "F1 Score", "AUC"]:
+            frame = QGroupBox(name.upper())
+            frame.setFixedHeight(80)
+            frame_layout = QVBoxLayout(frame)
+            label = QLabel("--")
+            label.setStyleSheet("color: #6E7681; font-size: 16px; font-weight: bold;")
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            frame_layout.addWidget(label)
+            self.metric_displays[name] = label
+            metrics_layout.addWidget(frame)
+        right_layout.addWidget(metrics_group)
+
+        # Charts in horizontal layout
+        charts_layout = QHBoxLayout()
+
+        # Feature importance chart
+        importance_group = QGroupBox("FEATURE IMPORTANCE")
+        importance_layout = QVBoxLayout(importance_group)
+        self.importance_chart = create_chart_canvas(self, width=5, height=4)
+        importance_layout.addWidget(self.importance_chart)
+        charts_layout.addWidget(importance_group)
+
+        # Confusion matrix chart
+        confusion_group = QGroupBox("CONFUSION MATRIX")
+        confusion_layout = QVBoxLayout(confusion_group)
+        self.confusion_chart = create_chart_canvas(self, width=4, height=4)
+        confusion_layout.addWidget(self.confusion_chart)
+        charts_layout.addWidget(confusion_group)
+
+        right_layout.addLayout(charts_layout)
 
         layout.addWidget(left_panel)
         layout.addWidget(right_panel, 1)
@@ -552,16 +581,35 @@ class TrainingTab(QWidget):
             model = RandomForestModel(n_estimators=n_estimators, max_depth=md)
             model.fit(X_train, y_train)
 
-            # Calculate accuracy on test set
+            # Calculate comprehensive metrics
+            from sklearn.metrics import (
+                accuracy_score, precision_score, recall_score, f1_score,
+                confusion_matrix, roc_auc_score
+            )
+            import numpy as np
+
             predictions = model.predict(X_test)
-            accuracy = (predictions == y_test.values).mean()
+            y_true = y_test.values
+
+            accuracy = accuracy_score(y_true, predictions)
+            precision = precision_score(y_true, predictions, average='weighted', zero_division=0)
+            recall = recall_score(y_true, predictions, average='weighted', zero_division=0)
+            f1 = f1_score(y_true, predictions, average='weighted', zero_division=0)
+
+            # AUC requires probability predictions
+            try:
+                y_proba = model.predict_proba(X_test)
+                # For multi-class, use one-vs-rest AUC
+                auc = roc_auc_score(y_true, y_proba, multi_class='ovr', average='weighted')
+            except:
+                auc = None
+
+            # Confusion matrix
+            cm = confusion_matrix(y_true, predictions, labels=[-1, 0, 1])
 
             # Get feature importance
             importance = model.feature_importance()
             top_features = importance.head(10)
-
-            # Get class distribution
-            class_counts = y.value_counts().sort_index()
 
             Path("models").mkdir(exist_ok=True)
             model.save(Path("models/random_forest.joblib"))
@@ -569,10 +617,13 @@ class TrainingTab(QWidget):
             return {
                 'samples': len(combined),
                 'accuracy': accuracy,
+                'precision': precision,
+                'recall': recall,
+                'f1': f1,
+                'auc': auc,
+                'confusion_matrix': cm.tolist(),
                 'feature_names': top_features.index.tolist(),
                 'feature_importance': top_features.values.tolist(),
-                'class_labels': ['SELL', 'HOLD', 'BUY'],
-                'class_counts': [class_counts.get(-1, 0), class_counts.get(0, 0), class_counts.get(1, 0)]
             }
 
         self.worker = WorkerThread(train)
@@ -588,26 +639,66 @@ class TrainingTab(QWidget):
             return
 
         samples = result['samples']
-        accuracy = result['accuracy']
-        self.status_label.setText(f"Training complete! Samples: {samples}, Accuracy: {accuracy:.1%}")
+        self.status_label.setText(f"Training complete! {samples} samples processed")
+
+        # Update metric displays
+        self.metric_displays["Accuracy"].setText(f"{result['accuracy']:.1%}")
+        self.metric_displays["Accuracy"].setStyleSheet("color: #00D4AA; font-size: 16px; font-weight: bold;")
+
+        self.metric_displays["Precision"].setText(f"{result['precision']:.1%}")
+        self.metric_displays["Precision"].setStyleSheet("color: #58A6FF; font-size: 16px; font-weight: bold;")
+
+        self.metric_displays["Recall"].setText(f"{result['recall']:.1%}")
+        self.metric_displays["Recall"].setStyleSheet("color: #58A6FF; font-size: 16px; font-weight: bold;")
+
+        self.metric_displays["F1 Score"].setText(f"{result['f1']:.1%}")
+        self.metric_displays["F1 Score"].setStyleSheet("color: #FFD93D; font-size: 16px; font-weight: bold;")
+
+        if result['auc'] is not None:
+            self.metric_displays["AUC"].setText(f"{result['auc']:.3f}")
+            self.metric_displays["AUC"].setStyleSheet("color: #58A6FF; font-size: 16px; font-weight: bold;")
+        else:
+            self.metric_displays["AUC"].setText("N/A")
 
         # Plot feature importance
-        self.chart.axes.clear()
+        self.importance_chart.axes.clear()
         feature_names = result['feature_names']
         importance = result['feature_importance']
 
-        # Horizontal bar chart for feature importance
         y_pos = range(len(feature_names))
-        bars = self.chart.axes.barh(y_pos, importance, color='#58A6FF')
-        self.chart.axes.set_yticks(y_pos)
-        self.chart.axes.set_yticklabels(feature_names, fontsize=8)
-        self.chart.axes.set_xlabel('Importance', color='#8B949E')
-        self.chart.axes.set_title(f'Top 10 Feature Importance (Accuracy: {accuracy:.1%})', color='#E6EDF3', fontsize=10)
-        self.chart.axes.set_facecolor('#0D1117')
-        self.chart.axes.tick_params(colors='#8B949E')
-        self.chart.axes.invert_yaxis()  # Highest importance at top
-        self.chart.fig.tight_layout()
-        self.chart.draw()
+        self.importance_chart.axes.barh(y_pos, importance, color='#58A6FF')
+        self.importance_chart.axes.set_yticks(y_pos)
+        self.importance_chart.axes.set_yticklabels(feature_names, fontsize=8)
+        self.importance_chart.axes.set_xlabel('Importance', color='#8B949E', fontsize=8)
+        self.importance_chart.axes.set_facecolor('#0D1117')
+        self.importance_chart.axes.tick_params(colors='#8B949E', labelsize=7)
+        self.importance_chart.axes.invert_yaxis()
+        self.importance_chart.fig.tight_layout()
+        self.importance_chart.draw()
+
+        # Plot confusion matrix
+        import numpy as np
+        self.confusion_chart.axes.clear()
+        cm = np.array(result['confusion_matrix'])
+        labels = ['SELL', 'HOLD', 'BUY']
+
+        im = self.confusion_chart.axes.imshow(cm, cmap='Blues', aspect='auto')
+        self.confusion_chart.axes.set_xticks(range(3))
+        self.confusion_chart.axes.set_yticks(range(3))
+        self.confusion_chart.axes.set_xticklabels(labels, fontsize=8)
+        self.confusion_chart.axes.set_yticklabels(labels, fontsize=8)
+        self.confusion_chart.axes.set_xlabel('Predicted', color='#8B949E', fontsize=8)
+        self.confusion_chart.axes.set_ylabel('Actual', color='#8B949E', fontsize=8)
+        self.confusion_chart.axes.tick_params(colors='#8B949E', labelsize=7)
+
+        # Add text annotations
+        for i in range(3):
+            for j in range(3):
+                color = 'white' if cm[i, j] > cm.max() / 2 else '#E6EDF3'
+                self.confusion_chart.axes.text(j, i, str(cm[i, j]), ha='center', va='center', color=color, fontsize=10)
+
+        self.confusion_chart.fig.tight_layout()
+        self.confusion_chart.draw()
 
     def on_error(self, error):
         self.train_btn.setEnabled(True)
