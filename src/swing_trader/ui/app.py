@@ -663,12 +663,24 @@ class TrainingTab(QWidget):
         features_group = QGroupBox("FEATURES")
         features_layout = QVBoxLayout(features_group)
 
-        # Feature checkboxes
+        # Feature checkboxes with tooltips
+        feature_tooltips = {
+            "SMA": "Simple Moving Average - Average price over N periods. Identifies trend direction.",
+            "EMA": "Exponential Moving Average - Weighted average giving more weight to recent prices. Faster trend response.",
+            "RSI": "Relative Strength Index - Momentum oscillator (0-100). Above 70 = overbought, below 30 = oversold.",
+            "MACD": "Moving Average Convergence Divergence - Trend-following momentum indicator. Signal line crossovers indicate buy/sell.",
+            "Bollinger": "Bollinger Bands - Volatility bands around SMA. Price touching bands may indicate reversal.",
+            "ATR": "Average True Range - Measures market volatility. Higher ATR = more volatile.",
+            "OBV": "On-Balance Volume - Cumulative volume indicator. Rising OBV confirms uptrend.",
+            "Stochastic": "Stochastic Oscillator - Momentum indicator (0-100). Compares closing price to price range.",
+        }
+
         self.feature_checks = {}
         feature_row1 = QHBoxLayout()
         for name in ["SMA", "EMA", "RSI"]:
             cb = QCheckBox(name)
             cb.setChecked(True)
+            cb.setToolTip(feature_tooltips[name])
             self.feature_checks[name] = cb
             feature_row1.addWidget(cb)
         features_layout.addLayout(feature_row1)
@@ -677,6 +689,7 @@ class TrainingTab(QWidget):
         for name in ["MACD", "Bollinger", "ATR"]:
             cb = QCheckBox(name)
             cb.setChecked(True)
+            cb.setToolTip(feature_tooltips[name])
             self.feature_checks[name] = cb
             feature_row2.addWidget(cb)
         features_layout.addLayout(feature_row2)
@@ -685,24 +698,39 @@ class TrainingTab(QWidget):
         for name in ["OBV", "Stochastic"]:
             cb = QCheckBox(name)
             cb.setChecked(True)
+            cb.setToolTip(feature_tooltips[name])
             self.feature_checks[name] = cb
             feature_row3.addWidget(cb)
         features_layout.addLayout(feature_row3)
 
-        # Feature parameters
-        features_layout.addWidget(QLabel("RSI Period"))
+        # Feature parameters with tooltips (shown/hidden based on feature selection)
+        self.rsi_label = QLabel("RSI Period")
+        self.rsi_label.setToolTip("Number of periods for RSI calculation. Default 14. Lower = more sensitive.")
+        features_layout.addWidget(self.rsi_label)
         self.rsi_period_spin = QSpinBox()
         self.rsi_period_spin.setRange(5, 30)
         self.rsi_period_spin.setValue(14)
+        self.rsi_period_spin.setToolTip("Number of periods for RSI calculation. Default 14. Lower = more sensitive.")
         features_layout.addWidget(self.rsi_period_spin)
 
-        features_layout.addWidget(QLabel("SMA Periods (comma-sep)"))
+        self.sma_label = QLabel("SMA Periods (comma-sep)")
+        self.sma_label.setToolTip("Periods for Simple Moving Averages. Common: 10, 20, 50, 200. Creates one feature per period.")
+        features_layout.addWidget(self.sma_label)
         self.sma_periods_input = QLineEdit("10, 20, 50")
+        self.sma_periods_input.setToolTip("Periods for Simple Moving Averages. Common: 10, 20, 50, 200. Creates one feature per period.")
         features_layout.addWidget(self.sma_periods_input)
 
-        features_layout.addWidget(QLabel("EMA Periods (comma-sep)"))
+        self.ema_label = QLabel("EMA Periods (comma-sep)")
+        self.ema_label.setToolTip("Periods for Exponential Moving Averages. Common: 12, 26 (MACD default). Creates one feature per period.")
+        features_layout.addWidget(self.ema_label)
         self.ema_periods_input = QLineEdit("12, 26")
+        self.ema_periods_input.setToolTip("Periods for Exponential Moving Averages. Common: 12, 26 (MACD default). Creates one feature per period.")
         features_layout.addWidget(self.ema_periods_input)
+
+        # Connect feature checkboxes to show/hide their parameter inputs
+        self.feature_checks["RSI"].toggled.connect(self.on_rsi_toggled)
+        self.feature_checks["SMA"].toggled.connect(self.on_sma_toggled)
+        self.feature_checks["EMA"].toggled.connect(self.on_ema_toggled)
 
         left_layout.addWidget(features_group)
 
@@ -722,12 +750,15 @@ class TrainingTab(QWidget):
         tune_layout.addWidget(self.autotune_check)
 
         trials_layout = QHBoxLayout()
-        trials_layout.addWidget(QLabel("Trials:"))
+        trials_label = QLabel("Trials:")
+        trials_label.setToolTip("Number of hyperparameter combinations to try. More trials = better results but longer search time.")
+        trials_layout.addWidget(trials_label)
         self.n_trials_spin = QSpinBox()
         self.n_trials_spin.setRange(5, 100)
         self.n_trials_spin.setValue(20)
         self.n_trials_spin.setSingleStep(5)
         self.n_trials_spin.setEnabled(False)
+        self.n_trials_spin.setToolTip("Number of hyperparameter combinations to try. More trials = better results but longer search time.")
         trials_layout.addWidget(self.n_trials_spin)
         trials_layout.addStretch()
         tune_layout.addLayout(trials_layout)
@@ -845,75 +876,108 @@ class TrainingTab(QWidget):
 
     def setup_rf_hyperparams(self):
         self.clear_hyperparam_layout()
-        self.hyperparam_layout.addWidget(QLabel("Number of Trees"))
+
+        trees_label = QLabel("Number of Trees")
+        trees_label.setToolTip("Number of decision trees in the forest. More trees = better accuracy but slower training.")
+        self.hyperparam_layout.addWidget(trees_label)
         self.n_estimators_spin = QSpinBox()
         self.n_estimators_spin.setRange(10, 500)
         self.n_estimators_spin.setValue(100)
         self.n_estimators_spin.setSingleStep(10)
+        self.n_estimators_spin.setToolTip("Number of decision trees in the forest. More trees = better accuracy but slower training.")
         self.hyperparam_layout.addWidget(self.n_estimators_spin)
 
-        self.hyperparam_layout.addWidget(QLabel("Max Depth (0 = unlimited)"))
+        depth_label = QLabel("Max Depth (0 = unlimited)")
+        depth_label.setToolTip("Maximum depth of each tree. Deeper trees capture more patterns but may overfit. 0 = no limit.")
+        self.hyperparam_layout.addWidget(depth_label)
         self.max_depth_spin = QSpinBox()
         self.max_depth_spin.setRange(0, 50)
         self.max_depth_spin.setValue(10)
+        self.max_depth_spin.setToolTip("Maximum depth of each tree. Deeper trees capture more patterns but may overfit. 0 = no limit.")
         self.hyperparam_layout.addWidget(self.max_depth_spin)
 
-        self.hyperparam_layout.addWidget(QLabel("Min Samples Split"))
+        split_label = QLabel("Min Samples Split")
+        split_label.setToolTip("Minimum samples required to split a node. Higher values prevent overfitting.")
+        self.hyperparam_layout.addWidget(split_label)
         self.min_samples_spin = QSpinBox()
         self.min_samples_spin.setRange(2, 20)
         self.min_samples_spin.setValue(2)
+        self.min_samples_spin.setToolTip("Minimum samples required to split a node. Higher values prevent overfitting.")
         self.hyperparam_layout.addWidget(self.min_samples_spin)
 
     def setup_xgb_hyperparams(self):
         self.clear_hyperparam_layout()
-        self.hyperparam_layout.addWidget(QLabel("Number of Rounds"))
+
+        rounds_label = QLabel("Number of Rounds")
+        rounds_label.setToolTip("Number of boosting rounds (trees added sequentially). More rounds = better fit but risk of overfitting.")
+        self.hyperparam_layout.addWidget(rounds_label)
         self.n_estimators_spin = QSpinBox()
         self.n_estimators_spin.setRange(10, 500)
         self.n_estimators_spin.setValue(100)
         self.n_estimators_spin.setSingleStep(10)
+        self.n_estimators_spin.setToolTip("Number of boosting rounds (trees added sequentially). More rounds = better fit but risk of overfitting.")
         self.hyperparam_layout.addWidget(self.n_estimators_spin)
 
-        self.hyperparam_layout.addWidget(QLabel("Max Depth"))
+        depth_label = QLabel("Max Depth")
+        depth_label.setToolTip("Maximum depth of each tree. XGBoost works well with shallow trees (3-10). Deeper = more complex patterns.")
+        self.hyperparam_layout.addWidget(depth_label)
         self.max_depth_spin = QSpinBox()
         self.max_depth_spin.setRange(1, 15)
         self.max_depth_spin.setValue(6)
+        self.max_depth_spin.setToolTip("Maximum depth of each tree. XGBoost works well with shallow trees (3-10). Deeper = more complex patterns.")
         self.hyperparam_layout.addWidget(self.max_depth_spin)
 
-        self.hyperparam_layout.addWidget(QLabel("Learning Rate"))
+        lr_label = QLabel("Learning Rate")
+        lr_label.setToolTip("Step size for each boosting round. Lower values (0.01-0.1) need more rounds but generalize better.")
+        self.hyperparam_layout.addWidget(lr_label)
         self.learning_rate_spin = QDoubleSpinBox()
         self.learning_rate_spin.setRange(0.01, 1.0)
         self.learning_rate_spin.setValue(0.1)
         self.learning_rate_spin.setSingleStep(0.01)
+        self.learning_rate_spin.setToolTip("Step size for each boosting round. Lower values (0.01-0.1) need more rounds but generalize better.")
         self.hyperparam_layout.addWidget(self.learning_rate_spin)
 
     def setup_lstm_hyperparams(self):
         self.clear_hyperparam_layout()
-        self.hyperparam_layout.addWidget(QLabel("Hidden Size"))
+
+        hidden_label = QLabel("Hidden Size")
+        hidden_label.setToolTip("Number of neurons in LSTM hidden layers. Larger = more capacity but slower and prone to overfitting.")
+        self.hyperparam_layout.addWidget(hidden_label)
         self.hidden_size_spin = QSpinBox()
         self.hidden_size_spin.setRange(16, 256)
         self.hidden_size_spin.setValue(64)
         self.hidden_size_spin.setSingleStep(16)
+        self.hidden_size_spin.setToolTip("Number of neurons in LSTM hidden layers. Larger = more capacity but slower and prone to overfitting.")
         self.hyperparam_layout.addWidget(self.hidden_size_spin)
 
-        self.hyperparam_layout.addWidget(QLabel("Number of Layers"))
+        layers_label = QLabel("Number of Layers")
+        layers_label.setToolTip("Number of stacked LSTM layers. 1-2 usually sufficient. More layers = deeper patterns but harder to train.")
+        self.hyperparam_layout.addWidget(layers_label)
         self.num_layers_spin = QSpinBox()
         self.num_layers_spin.setRange(1, 4)
         self.num_layers_spin.setValue(2)
+        self.num_layers_spin.setToolTip("Number of stacked LSTM layers. 1-2 usually sufficient. More layers = deeper patterns but harder to train.")
         self.hyperparam_layout.addWidget(self.num_layers_spin)
 
-        self.hyperparam_layout.addWidget(QLabel("Epochs"))
+        epochs_label = QLabel("Epochs")
+        epochs_label.setToolTip("Number of complete passes through training data. More epochs = better fit but risk of overfitting.")
+        self.hyperparam_layout.addWidget(epochs_label)
         self.epochs_spin = QSpinBox()
         self.epochs_spin.setRange(5, 100)
         self.epochs_spin.setValue(30)
         self.epochs_spin.setSingleStep(5)
+        self.epochs_spin.setToolTip("Number of complete passes through training data. More epochs = better fit but risk of overfitting.")
         self.hyperparam_layout.addWidget(self.epochs_spin)
 
-        self.hyperparam_layout.addWidget(QLabel("Learning Rate"))
+        lr_label = QLabel("Learning Rate")
+        lr_label.setToolTip("Step size for gradient descent. Too high = unstable training. Too low = slow convergence. Try 0.001.")
+        self.hyperparam_layout.addWidget(lr_label)
         self.learning_rate_spin = QDoubleSpinBox()
         self.learning_rate_spin.setRange(0.0001, 0.1)
         self.learning_rate_spin.setValue(0.001)
         self.learning_rate_spin.setSingleStep(0.0001)
         self.learning_rate_spin.setDecimals(4)
+        self.learning_rate_spin.setToolTip("Step size for gradient descent. Too high = unstable training. Too low = slow convergence. Try 0.001.")
         self.hyperparam_layout.addWidget(self.learning_rate_spin)
 
     def on_model_changed(self, model_name):
@@ -935,6 +999,21 @@ class TrainingTab(QWidget):
         else:
             self.tune_status.setText("Manual hyperparameters will be used")
             self.tune_status.setStyleSheet("color: #6E7681; font-size: 11px;")
+
+    def on_rsi_toggled(self, checked):
+        """Show/hide RSI period input based on feature selection."""
+        self.rsi_label.setVisible(checked)
+        self.rsi_period_spin.setVisible(checked)
+
+    def on_sma_toggled(self, checked):
+        """Show/hide SMA periods input based on feature selection."""
+        self.sma_label.setVisible(checked)
+        self.sma_periods_input.setVisible(checked)
+
+    def on_ema_toggled(self, checked):
+        """Show/hide EMA periods input based on feature selection."""
+        self.ema_label.setVisible(checked)
+        self.ema_periods_input.setVisible(checked)
 
     def on_launch_mlflow(self):
         """Launch MLflow UI in browser."""
@@ -1115,6 +1194,7 @@ class TrainingTab(QWidget):
 
             # Create model based on selection (use tuned params if available)
             is_lstm = False
+            xgb_early_stopping = None  # Will be set for XGBoost if tuned
             if model_type == "Random Forest":
                 from ..models.random_forest import RandomForestModel
                 params = {
@@ -1128,7 +1208,9 @@ class TrainingTab(QWidget):
                 model = RandomForestModel(**params)
             elif model_type == "XGBoost":
                 from ..models.xgboost_model import XGBoostModel
-                use_gpu = torch.cuda.is_available()
+                # Disable GPU for XGBoost - causes memory corruption/crashes
+                # TODO: Investigate XGBoost GPU stability issues
+                use_gpu = False  # torch.cuda.is_available()
                 params = {
                     "n_estimators": tuned_params.get("n_estimators", n_estimators),
                     "max_depth": tuned_params.get("max_depth", max_depth),
@@ -1137,6 +1219,9 @@ class TrainingTab(QWidget):
                     "colsample_bytree": tuned_params.get("colsample_bytree", 1.0),
                     "use_gpu": use_gpu,
                 }
+                # NOTE: early_stopping_rounds is a fit() parameter, not constructor param
+                # Store it separately for use in fit() call below
+                xgb_early_stopping = tuned_params.get("early_stopping_rounds", None)
                 model = XGBoostModel(**params)
             elif model_type == "LSTM":
                 from ..models.lstm import LSTMModel
@@ -1160,7 +1245,23 @@ class TrainingTab(QWidget):
                 md = max_depth if max_depth > 0 else None
                 model = RandomForestModel(n_estimators=n_estimators, max_depth=md)
 
-            model.fit(X_train, y_train)
+            # Train the model (XGBoost with early stopping needs special handling)
+            if model_type == "XGBoost" and xgb_early_stopping:
+                # Map labels for XGBoost and provide eval_set for early stopping
+                y_train_mapped = y_train.map({-1: 0, 0: 1, 1: 2})
+                y_test_mapped = y_test.map({-1: 0, 0: 1, 1: 2})
+                model._prepare_features(X_train)  # Set feature columns
+                X_train_prep = X_train[model.feature_columns]
+                X_test_prep = X_test[model.feature_columns]
+                model.model.fit(
+                    X_train_prep, y_train_mapped,
+                    eval_set=[(X_test_prep, y_test_mapped)],
+                    early_stopping_rounds=xgb_early_stopping,
+                    verbose=False
+                )
+                model.is_fitted = True
+            else:
+                model.fit(X_train, y_train)
 
             update_progress("Calculating metrics...", 80)
 
@@ -1205,11 +1306,21 @@ class TrainingTab(QWidget):
                 feature_names = feature_cols[:10]
                 feature_importance = None
 
-            update_progress("Saving model & logging to MLflow...", 95)
+            update_progress("Saving model...", 92)
 
             # Save model with timestamp for versioning
             from datetime import datetime
             from ..services import MLflowTracker
+            import gc
+
+            # Force GPU cleanup before save to prevent CUDA issues
+            gc.collect()
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+            except Exception:
+                pass
 
             Path("models").mkdir(exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1224,7 +1335,13 @@ class TrainingTab(QWidget):
                 "f1": f1,
                 "auc": auc
             }
+
             model.save(model_path, metrics=model_metrics, feature_config=feature_config)
+
+            # Force cleanup before MLflow logging
+            gc.collect()
+
+            update_progress("Logging to MLflow...", 95)
 
             # Log to MLflow
             try:
@@ -1279,9 +1396,12 @@ class TrainingTab(QWidget):
                     metrics["auc"] = auc
                 tracker.log_metrics(metrics)
 
-                # Log model artifact path
-                import mlflow
-                mlflow.log_artifact(str(model_path))
+                # Log model artifact path (skip if it causes issues)
+                try:
+                    import mlflow
+                    mlflow.log_artifact(str(model_path))
+                except Exception as artifact_err:
+                    print(f"MLflow artifact logging skipped: {artifact_err}")
 
                 tracker.end_run()
             except Exception as e:
