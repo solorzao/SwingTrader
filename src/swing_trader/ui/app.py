@@ -10,7 +10,8 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QLabel, QLineEdit, QPushButton, QComboBox, QSlider,
     QCheckBox, QProgressBar, QTableWidget, QTableWidgetItem, QGroupBox,
-    QSpinBox, QDoubleSpinBox, QHeaderView, QSplitter, QFrame, QScrollArea
+    QSpinBox, QDoubleSpinBox, QHeaderView, QSplitter, QFrame, QScrollArea,
+    QMessageBox
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont, QColor, QPalette
@@ -941,16 +942,209 @@ class BacktestTab(QWidget):
 
 
 class ModelsTab(QWidget):
+    model_selected = pyqtSignal(str)
+
     def __init__(self):
         super().__init__()
-        layout = QVBoxLayout(self)
-        header = QLabel("MODEL REGISTRY")
+        self.registry = None
+        self.setup_ui()
+        self.refresh_models()
+
+    def setup_ui(self):
+        layout = QHBoxLayout(self)
+
+        # Left panel - model list
+        left_panel = QWidget()
+        left_panel.setFixedWidth(350)
+        left_layout = QVBoxLayout(left_panel)
+
+        header = QLabel("TRAINED MODELS")
         header.setStyleSheet("color: #FFD93D; font-size: 18px; font-weight: bold;")
-        layout.addWidget(header)
-        subtitle = QLabel("Manage trained models with MLflow")
-        subtitle.setStyleSheet("color: #6E7681;")
-        layout.addWidget(subtitle)
-        layout.addStretch()
+        left_layout.addWidget(header)
+
+        # Models table
+        self.models_table = QTableWidget()
+        self.models_table.setColumnCount(3)
+        self.models_table.setHorizontalHeaderLabels(["Name", "Type", "Created"])
+        self.models_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.models_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.models_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.models_table.selectionModel().selectionChanged.connect(self.on_selection_changed)
+        left_layout.addWidget(self.models_table)
+
+        # Buttons
+        buttons_layout = QHBoxLayout()
+        self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn.clicked.connect(self.refresh_models)
+        buttons_layout.addWidget(self.refresh_btn)
+
+        self.delete_btn = QPushButton("Delete")
+        self.delete_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #DA3633;
+            }
+            QPushButton:hover {
+                background-color: #F85149;
+            }
+            QPushButton:disabled {
+                background-color: #21262D;
+                color: #6E7681;
+            }
+        """)
+        self.delete_btn.setEnabled(False)
+        self.delete_btn.clicked.connect(self.on_delete)
+        buttons_layout.addWidget(self.delete_btn)
+        left_layout.addLayout(buttons_layout)
+
+        layout.addWidget(left_panel)
+
+        # Right panel - model details
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+
+        details_group = QGroupBox("MODEL DETAILS")
+        details_layout = QVBoxLayout(details_group)
+
+        # Detail labels
+        self.detail_labels = {}
+        for field in ["Name", "Type", "Features", "Created", "Path"]:
+            row_layout = QHBoxLayout()
+            label = QLabel(f"{field}:")
+            label.setStyleSheet("color: #8B949E; font-weight: bold;")
+            label.setFixedWidth(80)
+            row_layout.addWidget(label)
+
+            value_label = QLabel("--")
+            value_label.setStyleSheet("color: #E6EDF3;")
+            value_label.setWordWrap(True)
+            row_layout.addWidget(value_label, 1)
+            self.detail_labels[field] = value_label
+            details_layout.addLayout(row_layout)
+
+        details_layout.addStretch()
+
+        # Use model button
+        self.use_btn = QPushButton("Use This Model")
+        self.use_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #238636;
+                font-size: 14px;
+                padding: 15px 30px;
+            }
+            QPushButton:hover {
+                background-color: #2EA043;
+            }
+            QPushButton:disabled {
+                background-color: #21262D;
+                color: #6E7681;
+            }
+        """)
+        self.use_btn.setEnabled(False)
+        self.use_btn.clicked.connect(self.on_use_model)
+        details_layout.addWidget(self.use_btn)
+
+        right_layout.addWidget(details_group)
+        layout.addWidget(right_panel, 1)
+
+    def refresh_models(self):
+        """Load models from registry and populate table."""
+        from ..services import ModelRegistry
+
+        self.registry = ModelRegistry()
+        models = self.registry.list_models()
+
+        # Sort by created date (newest first)
+        models.sort(key=lambda m: m.created, reverse=True)
+
+        self.models_table.setRowCount(len(models))
+        for i, model in enumerate(models):
+            name_item = QTableWidgetItem(model.name)
+            name_item.setData(Qt.ItemDataRole.UserRole, model.name)
+            self.models_table.setItem(i, 0, name_item)
+            self.models_table.setItem(i, 1, QTableWidgetItem(model.model_type))
+            self.models_table.setItem(i, 2, QTableWidgetItem(model.created.strftime("%Y-%m-%d %H:%M")))
+
+        self.clear_details()
+
+    def clear_details(self):
+        """Reset all detail labels to default."""
+        for label in self.detail_labels.values():
+            label.setText("--")
+        self.delete_btn.setEnabled(False)
+        self.use_btn.setEnabled(False)
+
+    def on_selection_changed(self):
+        """Update details panel when selection changes."""
+        selected = self.models_table.selectedItems()
+        if not selected:
+            self.clear_details()
+            return
+
+        row = self.models_table.currentRow()
+        name_item = self.models_table.item(row, 0)
+        if not name_item:
+            self.clear_details()
+            return
+
+        model_name = name_item.data(Qt.ItemDataRole.UserRole)
+        if not model_name or not self.registry:
+            self.clear_details()
+            return
+
+        try:
+            info = self.registry.get_model_info(model_name)
+            self.detail_labels["Name"].setText(info.name)
+            self.detail_labels["Type"].setText(info.model_type)
+            self.detail_labels["Features"].setText(str(info.feature_count))
+            self.detail_labels["Created"].setText(info.created.strftime("%Y-%m-%d %H:%M:%S"))
+            self.detail_labels["Path"].setText(str(info.path))
+            self.delete_btn.setEnabled(True)
+            self.use_btn.setEnabled(True)
+        except KeyError:
+            self.clear_details()
+
+    def on_delete(self):
+        """Delete the selected model."""
+        row = self.models_table.currentRow()
+        if row < 0:
+            return
+
+        name_item = self.models_table.item(row, 0)
+        if not name_item or not self.registry:
+            return
+
+        model_name = name_item.data(Qt.ItemDataRole.UserRole)
+        if not model_name:
+            return
+
+        # Confirm deletion
+        reply = QMessageBox.question(
+            self, "Delete Model",
+            f"Are you sure you want to delete '{model_name}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            self.registry.delete_model(model_name)
+            self.refresh_models()
+        except KeyError:
+            QMessageBox.warning(self, "Error", f"Failed to delete model '{model_name}'")
+
+    def on_use_model(self):
+        """Emit signal when user wants to use the selected model."""
+        row = self.models_table.currentRow()
+        if row < 0:
+            return
+
+        name_item = self.models_table.item(row, 0)
+        if not name_item:
+            return
+
+        model_name = name_item.data(Qt.ItemDataRole.UserRole)
+        if model_name:
+            self.model_selected.emit(model_name)
 
 
 class SwingTraderApp(QMainWindow):
