@@ -9,6 +9,30 @@ from ...training.tracker import ExperimentTracker
 from ...training.tuner import HyperparameterTuner
 
 
+def detect_gpu() -> dict:
+    """Detect available GPU for training."""
+    result = {"cuda": False, "cuda_name": None, "xgboost_gpu": False}
+
+    # Check PyTorch CUDA
+    try:
+        import torch
+        if torch.cuda.is_available():
+            result["cuda"] = True
+            result["cuda_name"] = torch.cuda.get_device_name(0)
+    except ImportError:
+        pass
+
+    # Check XGBoost GPU
+    try:
+        import xgboost as xgb
+        # XGBoost GPU is available if CUDA is available
+        result["xgboost_gpu"] = result["cuda"]
+    except ImportError:
+        pass
+
+    return result
+
+
 class TrainingView:
     """Training and hyperparameter tuning view."""
 
@@ -19,6 +43,7 @@ class TrainingView:
         self.labeler = SignalLabeler()
         self.tracker = ExperimentTracker()
         self._is_training = False
+        self._gpu_info = detect_gpu()
         self._setup()
 
     def _setup(self):
@@ -39,7 +64,8 @@ class TrainingView:
                 tag="train_model_type",
                 items=["Random Forest", "XGBoost (GPU)", "LSTM (CUDA)", "All Models"],
                 default_value="Random Forest",
-                width=-1
+                width=-1,
+                callback=self._on_model_type_change
             )
 
             dpg.add_spacer(height=10)
@@ -85,7 +111,31 @@ class TrainingView:
             )
 
             dpg.add_spacer(height=10)
-            dpg.add_checkbox(tag="tune_gpu", label="Use GPU Acceleration", default_value=True)
+
+            # GPU checkbox - only enabled if GPU is available
+            gpu_available = self._gpu_info["cuda"]
+            gpu_label = "Use GPU Acceleration"
+            if gpu_available:
+                gpu_label += f" ({self._gpu_info['cuda_name']})"
+            else:
+                gpu_label += " (No GPU detected)"
+
+            dpg.add_checkbox(
+                tag="tune_gpu",
+                label=gpu_label,
+                default_value=gpu_available,
+                enabled=gpu_available
+            )
+
+            dpg.add_spacer(height=15)
+
+            # Model-specific hyperparameter section
+            dpg.add_text("Model Parameters", color=COLORS["text_muted"])
+            dpg.add_spacer(height=5)
+
+            # Container for dynamic hyperparameter controls
+            self._hyperparam_container = dpg.add_child_window(height=120, border=False, tag="hyperparam_container")
+            self._update_hyperparameter_ui()
 
             dpg.add_spacer(height=15)
             dpg.add_button(
@@ -413,3 +463,39 @@ class TrainingView:
 
         thread = threading.Thread(target=run_tuning, daemon=True)
         thread.start()
+
+    def _on_model_type_change(self, sender=None, data=None):
+        """Handle model type selection change."""
+        self._update_hyperparameter_ui()
+
+    def _update_hyperparameter_ui(self):
+        """Update hyperparameter controls based on selected model."""
+        dpg.delete_item("hyperparam_container", children_only=True)
+
+        model_type = dpg.get_value("train_model_type") if dpg.does_item_exist("train_model_type") else "Random Forest"
+
+        with dpg.group(parent="hyperparam_container"):
+            if model_type == "Random Forest":
+                dpg.add_text("n_estimators", color=COLORS["text_muted"])
+                dpg.add_slider_int(tag="hp_n_estimators", default_value=100, min_value=10, max_value=500, width=-1)
+                dpg.add_spacer(height=5)
+                dpg.add_text("max_depth", color=COLORS["text_muted"])
+                dpg.add_slider_int(tag="hp_max_depth", default_value=10, min_value=3, max_value=30, width=-1)
+
+            elif model_type == "XGBoost (GPU)":
+                dpg.add_text("n_estimators", color=COLORS["text_muted"])
+                dpg.add_slider_int(tag="hp_n_estimators", default_value=100, min_value=10, max_value=500, width=-1)
+                dpg.add_spacer(height=5)
+                dpg.add_text("learning_rate", color=COLORS["text_muted"])
+                dpg.add_slider_float(tag="hp_learning_rate", default_value=0.1, min_value=0.01, max_value=0.5, format="%.3f", width=-1)
+
+            elif model_type == "LSTM (CUDA)":
+                dpg.add_text("hidden_size", color=COLORS["text_muted"])
+                dpg.add_slider_int(tag="hp_hidden_size", default_value=64, min_value=16, max_value=256, width=-1)
+                dpg.add_spacer(height=5)
+                dpg.add_text("num_layers", color=COLORS["text_muted"])
+                dpg.add_slider_int(tag="hp_num_layers", default_value=2, min_value=1, max_value=4, width=-1)
+
+            else:  # All Models
+                dpg.add_text("Tuning will optimize each model", color=COLORS["text_muted"])
+                dpg.add_text("with its own parameter ranges.", color=COLORS["text_muted"])

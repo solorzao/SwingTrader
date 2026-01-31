@@ -1,6 +1,6 @@
-# SwingTrader
+# Swing Trader
 
-ML-powered swing trading signal generator for US equities. Uses ensemble machine learning models (RandomForest, XGBoost, LSTM) to generate BUY/SELL/HOLD signals with GPU acceleration.
+ML-powered swing trading signal generator for US equities. Uses ensemble machine learning models (RandomForest, XGBoost, LSTM) to generate BUY/SELL/HOLD signals.
 
 ## Features
 

@@ -9,7 +9,7 @@ class SwingTraderApp:
     def __init__(self):
         self.width = 1600
         self.height = 950
-        self.title = "Swing Trader ML"
+        self.title = "Swing Trader"
 
     def setup(self):
         """Initialize Dear PyGui context and viewport."""
@@ -38,11 +38,11 @@ class SwingTraderApp:
         with dpg.window(tag="main_window", label="", no_title_bar=True):
             # Header bar
             with dpg.group(horizontal=True):
-                dpg.add_text("SWING TRADER ML", color=COLORS["accent"])
+                dpg.add_text("SWING TRADER", color=COLORS["accent"])
                 dpg.add_spacer(width=20)
                 dpg.add_text("|", color=COLORS["border"])
                 dpg.add_spacer(width=20)
-                dpg.add_text("GPU-Accelerated Trading Signals", color=COLORS["text_secondary"])
+                dpg.add_text("ML Trading Signals", color=COLORS["text_secondary"])
 
             dpg.add_spacer(height=10)
             dpg.add_separator()
