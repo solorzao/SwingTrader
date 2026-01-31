@@ -4,19 +4,19 @@ ML-powered swing trading signal generator for US equities. Uses ensemble machine
 
 ## Features
 
-- **Multiple ML Models**: RandomForest, XGBoost (GPU), LSTM (CUDA), and Ensemble voting
-- **Technical Indicators**: RSI, MACD, Bollinger Bands, ATR, OBV, SMA/EMA, ROC
+- **Multiple ML Models**: RandomForest, XGBoost (GPU), LSTM (CUDA) with versioned model storage
+- **Configurable Technical Indicators**: RSI, MACD, Bollinger Bands, ATR, OBV, SMA/EMA, Stochastic with adjustable parameters
 - **Hyperparameter Tuning**: Optuna-based Bayesian optimization with TimeSeriesSplit CV
-- **Experiment Tracking**: MLflow integration for model versioning and metrics
-- **Backtesting Engine**: Walk-forward testing with Sharpe ratio, max drawdown, win rate
-- **Desktop UI**: PyQt6 interface with dark trading terminal theme
-- **CLI Interface**: Full command-line access to all features
+- **Experiment Tracking**: MLflow integration with local UI for comparing runs
+- **Backtesting Engine**: Walk-forward testing with mark-to-market equity, trade markers, and performance metrics
+- **Quick Scan**: Scan S&P 500 stocks with full probability breakdown
+- **Desktop UI**: PyQt6 interface with dark trading terminal theme and global model selector
 
 ## Installation
 
 ### Prerequisites
 
-- Python 3.11+ (tested on Python 3.14)
+- Python 3.11+ (tested on Python 3.12)
 - NVIDIA GPU with CUDA (optional, for GPU acceleration)
 
 ### Setup
@@ -79,40 +79,72 @@ swing-trader backtest --ticker AAPL --model xgboost
 swing-trader ui
 ```
 
-### Desktop UI
+## Desktop UI
 
-The UI provides four main views:
+The UI provides four main tabs with a global model selector in the header:
 
-1. **Signals**: View current signals with confidence scores and price charts
-2. **Training**: Train models with progress tracking and parameter configuration
-3. **Backtest**: Run backtests and view performance metrics
-4. **Models**: Manage trained models via MLflow registry
+### Global Model Selector
+Select your active model from the header dropdown. The selected model is used across all tabs (Signals, Backtest, Quick Scan). Models are named with timestamps (e.g., `xgboost_20260131_143025`) so you can train multiple versions.
+
+### Signals Tab
+- Enter a ticker symbol to analyze
+- View current BUY/SELL/HOLD signal with confidence scores
+- See price chart with technical indicators
+- Full probability breakdown (P(Buy), P(Hold), P(Sell))
+
+### Training Tab
+- **Training Symbols**: Comma-separated tickers for training data
+- **Data Period**: 3mo, 6mo, 1y, or 2y of historical data
+- **Feature Selection**: Toggle individual indicators (SMA, EMA, RSI, MACD, Bollinger, ATR, OBV, Stochastic)
+- **Feature Parameters**: Adjust RSI period, SMA periods, EMA periods
+- **Hyperparameters**: Number of trees, max depth, min samples split
+- **MLflow UI**: Launch button to open experiment tracking dashboard
+- **Metrics Display**: Accuracy, Precision, Recall, F1 Score, AUC
+- **Visualizations**: Feature importance chart and confusion matrix
+
+### Backtest Tab
+- Configure symbol, period, and initial capital
+- **Equity Curve**: Mark-to-market chart showing unrealized P&L during open positions
+- **Trade Markers**: Green triangles (long entry), red triangles (short entry), squares (exits)
+- **Performance Metrics**: Total return, Sharpe ratio, max drawdown, win rate, trade count
+- **Trade History**: Detailed table of all trades with entry/exit prices and P&L
+
+### Models Tab
+- View all trained models with timestamps
+- See performance metrics (Accuracy, F1) for each model
+- Model details: type, feature count, creation date
+- Delete models you no longer need
+
+### Quick Scan
+- **Stock Lists**: FAANG, Tech Leaders, S&P 500 Top 20, or custom tickers
+- **Output Columns**: Ticker, Signal, Confidence, Price, RSI, P(Buy), P(Hold), P(Sell), Trend
+- Scan 20+ stocks for trading opportunities
 
 ## Architecture
 
 ```
 src/swing_trader/
 ├── data/
-│   └── fetcher.py          # Yahoo Finance data fetching
+│   └── fetcher.py              # Yahoo Finance data fetching
 ├── features/
-│   ├── indicators.py       # Technical indicator calculations
-│   └── labeler.py          # Signal label generation
+│   ├── indicators.py           # Configurable technical indicators
+│   └── labeler.py              # Signal label generation
 ├── models/
-│   ├── base.py             # Abstract model interface
-│   ├── random_forest.py    # RandomForest classifier
-│   ├── xgboost_model.py    # XGBoost with GPU support
-│   ├── lstm.py             # PyTorch LSTM with CUDA
-│   └── ensemble.py         # Ensemble voting/averaging
+│   ├── base.py                 # Abstract model interface with metrics
+│   ├── random_forest.py        # RandomForest classifier
+│   ├── xgboost_model.py        # XGBoost with GPU support
+│   ├── lstm.py                 # PyTorch LSTM with CUDA
+│   └── ensemble.py             # Ensemble voting/averaging
 ├── backtest/
-│   └── engine.py           # Backtesting with metrics
-├── training/
-│   ├── tracker.py          # MLflow experiment tracking
-│   └── tuner.py            # Optuna hyperparameter tuning
+│   └── engine.py               # Mark-to-market backtesting
+├── services/
+│   ├── model_registry.py       # Model loading and management
+│   └── mlflow_tracking.py      # MLflow experiment tracking
 ├── signals/
-│   └── generator.py        # Signal generation pipeline
+│   └── generator.py            # Signal generation pipeline
 ├── ui/
-│   └── app.py              # Main PyQt6 application
-└── cli.py                  # Command-line interface
+│   └── app.py                  # Main PyQt6 application
+└── cli.py                      # Command-line interface
 ```
 
 ## Models
@@ -124,12 +156,29 @@ Models classify each day as:
 - **HOLD (0)**: Expected return between -threshold and +threshold
 - **SELL (-1)**: Expected return < -threshold
 
-### Feature Set
+### Model Versioning
 
-- Price-based: SMA (20, 50), EMA (12, 26), ROC
-- Momentum: RSI (14), MACD (12, 26, 9)
-- Volatility: Bollinger Bands (20, 2), ATR (14)
-- Volume: OBV, Volume SMA
+Models are saved with timestamps: `{model_type}_{YYYYMMDD}_{HHMMSS}.joblib`
+
+This allows you to:
+- Train multiple versions of the same model type
+- Compare performance across training runs
+- Keep the best performing models
+
+### Configurable Feature Set
+
+All indicators can be toggled on/off during training:
+
+| Indicator | Parameters | Default |
+|-----------|------------|---------|
+| SMA | Periods | 10, 20, 50 |
+| EMA | Periods | 12, 26 |
+| RSI | Period | 14 |
+| MACD | Fast, Slow, Signal | 12, 26, 9 |
+| Bollinger Bands | Period, Std Dev | 20, 2 |
+| ATR | Period | 14 |
+| OBV | - | - |
+| Stochastic | K, D periods | 14, 3 |
 
 ### GPU Acceleration
 
@@ -138,13 +187,31 @@ Models classify each day as:
 
 ## MLflow Tracking
 
-Experiments are tracked in the local `mlruns/` directory. To view:
+Experiments are tracked in the local `mlruns/` directory.
 
+**From the UI**: Click "Launch MLflow UI" button in the Training tab.
+
+**From command line**:
 ```bash
-mlflow ui
+mlflow ui --backend-store-uri mlruns
 ```
 
-Then open http://localhost:5000 in your browser.
+Then open http://localhost:5000 in your browser to:
+- Compare training runs side-by-side
+- View metrics history (accuracy, F1, loss curves)
+- See hyperparameters used for each run
+- Download model artifacts
+
+## File Storage
+
+The following directories contain user-specific data and are git-ignored:
+
+| Directory | Contents |
+|-----------|----------|
+| `models/` | Trained model files (.joblib) |
+| `mlruns/` | MLflow experiment tracking data |
+| `mlartifacts/` | MLflow model artifacts |
+| `data/` | Cached price data |
 
 ## License
 
