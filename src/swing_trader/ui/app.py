@@ -556,10 +556,24 @@ class TrainingTab(QWidget):
             predictions = model.predict(X_test)
             accuracy = (predictions == y_test.values).mean()
 
+            # Get feature importance
+            importance = model.feature_importance()
+            top_features = importance.head(10)
+
+            # Get class distribution
+            class_counts = y.value_counts().sort_index()
+
             Path("models").mkdir(exist_ok=True)
             model.save(Path("models/random_forest.joblib"))
 
-            return len(combined), accuracy
+            return {
+                'samples': len(combined),
+                'accuracy': accuracy,
+                'feature_names': top_features.index.tolist(),
+                'feature_importance': top_features.values.tolist(),
+                'class_labels': ['SELL', 'HOLD', 'BUY'],
+                'class_counts': [class_counts.get(-1, 0), class_counts.get(0, 0), class_counts.get(1, 0)]
+            }
 
         self.worker = WorkerThread(train)
         self.worker.finished.connect(self.on_train_complete)
@@ -569,11 +583,31 @@ class TrainingTab(QWidget):
     def on_train_complete(self, result):
         self.train_btn.setEnabled(True)
         self.progress_bar.setValue(100)
-        if result[0] is None:
+        if result is None or (isinstance(result, dict) and result.get('samples') is None):
             self.status_label.setText("No data collected")
             return
-        samples, accuracy = result
+
+        samples = result['samples']
+        accuracy = result['accuracy']
         self.status_label.setText(f"Training complete! Samples: {samples}, Accuracy: {accuracy:.1%}")
+
+        # Plot feature importance
+        self.chart.axes.clear()
+        feature_names = result['feature_names']
+        importance = result['feature_importance']
+
+        # Horizontal bar chart for feature importance
+        y_pos = range(len(feature_names))
+        bars = self.chart.axes.barh(y_pos, importance, color='#58A6FF')
+        self.chart.axes.set_yticks(y_pos)
+        self.chart.axes.set_yticklabels(feature_names, fontsize=8)
+        self.chart.axes.set_xlabel('Importance', color='#8B949E')
+        self.chart.axes.set_title(f'Top 10 Feature Importance (Accuracy: {accuracy:.1%})', color='#E6EDF3', fontsize=10)
+        self.chart.axes.set_facecolor('#0D1117')
+        self.chart.axes.tick_params(colors='#8B949E')
+        self.chart.axes.invert_yaxis()  # Highest importance at top
+        self.chart.fig.tight_layout()
+        self.chart.draw()
 
     def on_error(self, error):
         self.train_btn.setEnabled(True)
