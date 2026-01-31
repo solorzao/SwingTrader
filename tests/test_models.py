@@ -4,6 +4,7 @@ import numpy as np
 from swing_trader.models.base import BaseModel, Signal
 from swing_trader.models.random_forest import RandomForestModel
 from swing_trader.models.xgboost_model import XGBoostModel
+from swing_trader.models.lstm import LSTMModel
 
 def test_signal_enum():
     assert Signal.BUY.value == 1
@@ -68,3 +69,14 @@ def test_xgb_hyperparameters():
     model = XGBoostModel(n_estimators=50, max_depth=3, learning_rate=0.05)
     assert model.n_estimators == 50
     assert model.max_depth == 3
+
+
+def test_lstm_fit_and_predict(sample_data):
+    X, y = sample_data
+    model = LSTMModel(sequence_length=10, epochs=2, batch_size=32)
+    model.fit(X, y)
+
+    assert model.is_fitted
+    preds = model.predict(X)
+    assert len(preds) == len(X) - model.sequence_length + 1
+    assert all(p in [-1, 0, 1] for p in preds)
