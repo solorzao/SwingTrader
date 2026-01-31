@@ -274,8 +274,13 @@ def run_ui(args):
     try:
         from swing_trader.ui.app import main as ui_main
         ui_main()
-    except ImportError:
-        print("Desktop UI not yet implemented. Coming soon!")
+    except ImportError as e:
+        print(f"Failed to load UI: {e}")
+        print("Make sure dearpygui is installed: pip install dearpygui")
+    except Exception as e:
+        print(f"Error launching UI: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
