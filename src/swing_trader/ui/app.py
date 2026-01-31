@@ -699,6 +699,33 @@ class TrainingTab(QWidget):
         self.setup_rf_hyperparams()
         left_layout.addWidget(self.hyperparam_group)
 
+        # Auto-tune group
+        tune_group = QGroupBox("AUTO-TUNE (OPTUNA)")
+        tune_layout = QVBoxLayout(tune_group)
+
+        self.autotune_check = QCheckBox("Auto-tune hyperparameters")
+        self.autotune_check.setToolTip("Use Optuna to automatically find optimal hyperparameters")
+        self.autotune_check.toggled.connect(self.on_autotune_toggled)
+        tune_layout.addWidget(self.autotune_check)
+
+        trials_layout = QHBoxLayout()
+        trials_layout.addWidget(QLabel("Trials:"))
+        self.n_trials_spin = QSpinBox()
+        self.n_trials_spin.setRange(10, 200)
+        self.n_trials_spin.setValue(30)
+        self.n_trials_spin.setSingleStep(10)
+        self.n_trials_spin.setEnabled(False)
+        trials_layout.addWidget(self.n_trials_spin)
+        trials_layout.addStretch()
+        tune_layout.addLayout(trials_layout)
+
+        self.tune_status = QLabel("Manual hyperparameters will be used")
+        self.tune_status.setStyleSheet("color: #6E7681; font-size: 11px;")
+        self.tune_status.setWordWrap(True)
+        tune_layout.addWidget(self.tune_status)
+
+        left_layout.addWidget(tune_group)
+
         # Training buttons
         self.train_btn = QPushButton("Start Training")
         self.train_btn.clicked.connect(self.on_train)
@@ -867,6 +894,18 @@ class TrainingTab(QWidget):
         elif model_name == "LSTM":
             self.setup_lstm_hyperparams()
 
+    def on_autotune_toggled(self, checked):
+        """Enable/disable auto-tune controls."""
+        self.n_trials_spin.setEnabled(checked)
+        # Disable manual hyperparams when auto-tuning
+        self.hyperparam_group.setEnabled(not checked)
+        if checked:
+            self.tune_status.setText("Optuna will search for optimal hyperparameters")
+            self.tune_status.setStyleSheet("color: #58A6FF; font-size: 11px;")
+        else:
+            self.tune_status.setText("Manual hyperparameters will be used")
+            self.tune_status.setStyleSheet("color: #6E7681; font-size: 11px;")
+
     def on_launch_mlflow(self):
         """Launch MLflow UI in browser."""
         import webbrowser
@@ -924,6 +963,10 @@ class TrainingTab(QWidget):
         period = self.period_combo.currentText()
         feature_config = self.get_feature_config()
 
+        # Auto-tune settings
+        use_autotune = self.autotune_check.isChecked()
+        n_trials = self.n_trials_spin.value()
+
         # Common params (may not exist depending on model type)
         n_estimators_spin = getattr(self, 'n_estimators_spin', None)
         n_estimators = n_estimators_spin.value() if n_estimators_spin else 100
@@ -980,35 +1023,72 @@ class TrainingTab(QWidget):
             from sklearn.model_selection import train_test_split
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-            update_progress(f"Training {model_type}...", 40)
+            # Auto-tune hyperparameters if enabled
+            tuned_params = {}
+            if use_autotune:
+                update_progress(f"Auto-tuning {model_type} ({n_trials} trials)...", 35)
+                from ..training.tuner import HyperparameterTuner
+                tuner = HyperparameterTuner()
 
-            # Create model based on selection
+                try:
+                    if model_type == "Random Forest":
+                        result = tuner.tune_random_forest(X_train, y_train, n_trials=n_trials)
+                    elif model_type == "XGBoost":
+                        use_gpu = torch.cuda.is_available()
+                        result = tuner.tune_xgboost(X_train, y_train, n_trials=n_trials, use_gpu=use_gpu)
+                    elif model_type == "LSTM":
+                        result = tuner.tune_lstm(X_train, y_train, n_trials=n_trials)
+                    else:
+                        result = tuner.tune_random_forest(X_train, y_train, n_trials=n_trials)
+
+                    tuned_params = result.get("best_params", {})
+                    update_progress(f"Best params found (score: {result.get('best_value', 0):.3f})", 50)
+                except Exception as e:
+                    update_progress(f"Tuning failed, using defaults: {str(e)[:30]}", 40)
+
+            update_progress(f"Training {model_type}...", 55)
+
+            # Create model based on selection (use tuned params if available)
             is_lstm = False
             if model_type == "Random Forest":
                 from ..models.random_forest import RandomForestModel
-                md = max_depth if max_depth > 0 else None
-                model = RandomForestModel(n_estimators=n_estimators, max_depth=md)
+                params = {
+                    "n_estimators": tuned_params.get("n_estimators", n_estimators),
+                    "max_depth": tuned_params.get("max_depth", max_depth if max_depth > 0 else None),
+                    "min_samples_split": tuned_params.get("min_samples_split", 2),
+                    "min_samples_leaf": tuned_params.get("min_samples_leaf", 1),
+                }
+                if params["max_depth"] == 0:
+                    params["max_depth"] = None
+                model = RandomForestModel(**params)
             elif model_type == "XGBoost":
                 from ..models.xgboost_model import XGBoostModel
-                # Auto-detect GPU availability
                 use_gpu = torch.cuda.is_available()
-                model = XGBoostModel(
-                    n_estimators=n_estimators,
-                    max_depth=max_depth,
-                    learning_rate=learning_rate,
-                    use_gpu=use_gpu
-                )
+                params = {
+                    "n_estimators": tuned_params.get("n_estimators", n_estimators),
+                    "max_depth": tuned_params.get("max_depth", max_depth),
+                    "learning_rate": tuned_params.get("learning_rate", learning_rate),
+                    "subsample": tuned_params.get("subsample", 1.0),
+                    "colsample_bytree": tuned_params.get("colsample_bytree", 1.0),
+                    "use_gpu": use_gpu,
+                }
+                model = XGBoostModel(**params)
             elif model_type == "LSTM":
                 from ..models.lstm import LSTMModel
-                # Auto-detect CUDA - use GPU if available, fallback to CPU
                 device = "cuda" if torch.cuda.is_available() else "cpu"
-                model = LSTMModel(
-                    hidden_size=hidden_size,
-                    num_layers=num_layers,
-                    epochs=epochs,
-                    learning_rate=learning_rate,
-                    device=device
-                )
+                params = {
+                    "hidden_size": tuned_params.get("hidden_size", hidden_size),
+                    "num_layers": tuned_params.get("num_layers", num_layers),
+                    "epochs": tuned_params.get("epochs", epochs),
+                    "learning_rate": tuned_params.get("learning_rate", learning_rate),
+                    "dropout": tuned_params.get("dropout", 0.2),
+                    "device": device,
+                }
+                if "sequence_length" in tuned_params:
+                    params["sequence_length"] = tuned_params["sequence_length"]
+                if "batch_size" in tuned_params:
+                    params["batch_size"] = tuned_params["batch_size"]
+                model = LSTMModel(**params)
                 is_lstm = True
             else:  # All Models - use Random Forest as default
                 from ..models.random_forest import RandomForestModel
@@ -1087,7 +1167,7 @@ class TrainingTab(QWidget):
                 run_name = f"{model_type}_{timestamp}"
                 tracker.start_run(run_name=run_name)
 
-                # Log parameters
+                # Log parameters (use actual params from model, which may be tuned)
                 params = {
                     "model_type": model_type,
                     "tickers": tickers_text,
@@ -1095,19 +1175,28 @@ class TrainingTab(QWidget):
                     "train_samples": len(X_train),
                     "test_samples": len(X_test),
                     "n_features": len(feature_cols),
+                    "auto_tuned": use_autotune,
                 }
-                if model_type == "Random Forest":
-                    params["n_estimators"] = n_estimators
-                    params["max_depth"] = max_depth
-                elif model_type == "XGBoost":
-                    params["n_estimators"] = n_estimators
-                    params["max_depth"] = max_depth
-                    params["learning_rate"] = learning_rate
-                elif model_type == "LSTM":
-                    params["hidden_size"] = hidden_size
-                    params["num_layers"] = num_layers
-                    params["epochs"] = epochs
-                    params["learning_rate"] = learning_rate
+                if use_autotune:
+                    params["n_trials"] = n_trials
+
+                # Log the actual hyperparameters used (tuned or manual)
+                if tuned_params:
+                    for k, v in tuned_params.items():
+                        params[k] = v
+                else:
+                    if model_type == "Random Forest":
+                        params["n_estimators"] = n_estimators
+                        params["max_depth"] = max_depth
+                    elif model_type == "XGBoost":
+                        params["n_estimators"] = n_estimators
+                        params["max_depth"] = max_depth
+                        params["learning_rate"] = learning_rate
+                    elif model_type == "LSTM":
+                        params["hidden_size"] = hidden_size
+                        params["num_layers"] = num_layers
+                        params["epochs"] = epochs
+                        params["learning_rate"] = learning_rate
 
                 tracker.log_params(params)
 
