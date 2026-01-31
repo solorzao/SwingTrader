@@ -18,6 +18,7 @@ COLORS = {
     "hold": (139, 148, 158),           # #8B949E - gray
     "accent": (255, 217, 61),          # #FFD93D - gold
     "interactive": (88, 166, 255),     # #58A6FF - blue
+    "warning": (255, 193, 7),          # #FFC107 - amber/yellow
 
     # UI elements
     "border": (48, 54, 61),            # #30363D
