@@ -97,7 +97,11 @@ Select your active model from the header dropdown. The selected model is used ac
 - **Data Period**: 3mo, 6mo, 1y, or 2y of historical data
 - **Feature Selection**: Toggle individual indicators (SMA, EMA, RSI, MACD, Bollinger, ATR, OBV, Stochastic)
 - **Feature Parameters**: Adjust RSI period, SMA periods, EMA periods
-- **Hyperparameters**: Number of trees, max depth, min samples split
+- **Hyperparameters**: Number of trees, max depth, min samples split (manual mode)
+- **Auto-Tune (Optuna)**: Enable automatic hyperparameter optimization
+  - Set number of trials (10-200)
+  - Uses Bayesian optimization with cross-validation
+  - Disables manual hyperparameters when enabled
 - **MLflow UI**: Launch button to open experiment tracking dashboard
 - **Metrics Display**: Accuracy, Precision, Recall, F1 Score, AUC
 - **Visualizations**: Feature importance chart and confusion matrix
@@ -113,7 +117,8 @@ Select your active model from the header dropdown. The selected model is used ac
 - View all trained models with timestamps
 - See performance metrics (Accuracy, F1) for each model
 - Model details: type, feature count, creation date
-- Delete models you no longer need
+- Multi-select deletion (Ctrl+Click or Shift+Click to select multiple)
+- Set any model as the active model for use across tabs
 
 ### Quick Scan
 - **Stock Lists**: FAANG, Tech Leaders, S&P 500 Top 20, or custom tickers
