@@ -302,8 +302,6 @@ class SignalsTab(QWidget):
             fetcher = StockDataFetcher()
             indicators = TechnicalIndicators()
             data = fetcher.fetch(ticker, period=period)
-            if data is not None and not data.empty:
-                data = indicators.add_all(data)
 
             signal_info = None
             if model_name and data is not None and not data.empty:
@@ -311,6 +309,13 @@ class SignalsTab(QWidget):
                 registry = ModelRegistry()
                 try:
                     model = registry.get_model(model_name)
+
+                    # Use model's feature config if available, otherwise use defaults
+                    model_feature_config = getattr(model, 'feature_config', None)
+                    if model_feature_config:
+                        data = indicators.add_all(data, config=model_feature_config)
+                    else:
+                        data = indicators.add_all(data)
 
                     # Prepare features (exclude non-feature columns)
                     exclude_cols = ['open', 'high', 'low', 'close', 'volume', 'label']
@@ -448,9 +453,11 @@ class SignalsTab(QWidget):
             indicators = TechnicalIndicators()
 
             model = None
+            model_feature_config = None
             if model_name:
                 registry = ModelRegistry()
                 model = registry.get_model(model_name)
+                model_feature_config = getattr(model, 'feature_config', None)
 
             results = []
             for i, ticker in enumerate(tickers):
@@ -461,7 +468,12 @@ class SignalsTab(QWidget):
                     data = fetcher.fetch(ticker, period="6mo")
                     if data is None or data.empty:
                         continue
-                    data = indicators.add_all(data)
+
+                    # Use model's feature config if available
+                    if model_feature_config:
+                        data = indicators.add_all(data, config=model_feature_config)
+                    else:
+                        data = indicators.add_all(data)
                     latest = data.iloc[-1]
 
                     # Get indicator values
@@ -1158,7 +1170,7 @@ class TrainingTab(QWidget):
             model_filename = f"{model_type.lower().replace(' ', '_')}_{timestamp}"
             model_path = Path(f"models/{model_filename}.joblib")
 
-            # Save model with metrics
+            # Save model with metrics and feature config
             model_metrics = {
                 "accuracy": accuracy,
                 "precision": precision,
@@ -1166,7 +1178,7 @@ class TrainingTab(QWidget):
                 "f1": f1,
                 "auc": auc
             }
-            model.save(model_path, metrics=model_metrics)
+            model.save(model_path, metrics=model_metrics, feature_config=feature_config)
 
             # Log to MLflow
             try:
@@ -1481,8 +1493,6 @@ class BacktestTab(QWidget):
             if data is None or data.empty:
                 return None
 
-            data = indicators.add_all(data)
-
             if progress_callback:
                 progress_callback("Generating signals...", 50)
 
@@ -1490,6 +1500,14 @@ class BacktestTab(QWidget):
                 # Use ML model
                 registry = ModelRegistry()
                 model = registry.get_model(model_name)
+
+                # Use model's feature config if available, otherwise use defaults
+                model_feature_config = getattr(model, 'feature_config', None)
+                if model_feature_config:
+                    data = indicators.add_all(data, config=model_feature_config)
+                else:
+                    data = indicators.add_all(data)
+
                 predictions = model.predict(data)
 
                 # Handle LSTM shorter output
@@ -1499,7 +1517,8 @@ class BacktestTab(QWidget):
 
                 data['signal'] = predictions
             else:
-                # Fallback to RSI strategy
+                # Fallback to RSI strategy - use default indicators
+                data = indicators.add_all(data)
                 data['signal'] = 0
                 for i in range(len(data)):
                     rsi = data['rsi_14'].iloc[i] if 'rsi_14' in data.columns else 50

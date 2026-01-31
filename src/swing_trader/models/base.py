@@ -18,6 +18,7 @@ class BaseModel(ABC):
         self.name = name
         self.model = None
         self.feature_columns: list[str] = []
+        self.feature_config: dict = None  # Store feature generation config
         self.is_fitted = False
         self.metrics: dict = {}  # Store training metrics
 
@@ -41,17 +42,20 @@ class BaseModel(ABC):
         """Predict probabilities for each class."""
         pass
 
-    def save(self, path: Path, metrics: dict = None) -> None:
-        """Save model to disk with optional metrics."""
+    def save(self, path: Path, metrics: dict = None, feature_config: dict = None) -> None:
+        """Save model to disk with optional metrics and feature config."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         if metrics:
             self.metrics = metrics
+        if feature_config:
+            self.feature_config = feature_config
         joblib.dump({
             "model": self.model,
             "feature_columns": self.feature_columns,
             "name": self.name,
-            "metrics": self.metrics
+            "metrics": self.metrics,
+            "feature_config": self.feature_config
         }, path)
 
     def load(self, path: Path) -> "BaseModel":
@@ -61,6 +65,7 @@ class BaseModel(ABC):
         self.feature_columns = data["feature_columns"]
         self.name = data["name"]
         self.metrics = data.get("metrics", {})
+        self.feature_config = data.get("feature_config", None)
         self.is_fitted = True
         return self
 
