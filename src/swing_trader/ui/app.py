@@ -1,4 +1,11 @@
 import sys
+
+# Pre-import torch in main thread to avoid DLL loading issues in worker threads
+try:
+    import torch
+except ImportError:
+    pass
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QLabel, QLineEdit, QPushButton, QComboBox, QSlider,
