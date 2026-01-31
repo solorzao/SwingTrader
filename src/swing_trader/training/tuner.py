@@ -21,17 +21,17 @@ class HyperparameterTuner:
         X: pd.DataFrame,
         y: pd.Series,
         n_trials: int = 50,
-        cv_splits: int = 5,
-        timeout: int | None = None
+        cv_splits: int = 3,
+        timeout: int | None = 180  # 3 minute default timeout
     ) -> dict:
         """Tune RandomForest hyperparameters."""
 
         def objective(trial):
             params = {
-                "n_estimators": trial.suggest_int("n_estimators", 50, 300),
-                "max_depth": trial.suggest_int("max_depth", 3, 20),
-                "min_samples_split": trial.suggest_int("min_samples_split", 2, 20),
-                "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 10),
+                "n_estimators": trial.suggest_int("n_estimators", 50, 200),
+                "max_depth": trial.suggest_int("max_depth", 3, 15),
+                "min_samples_split": trial.suggest_int("min_samples_split", 2, 15),
+                "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 8),
             }
 
             model = RandomForestModel(**params)
@@ -49,30 +49,54 @@ class HyperparameterTuner:
         X: pd.DataFrame,
         y: pd.Series,
         n_trials: int = 50,
-        cv_splits: int = 5,
-        timeout: int | None = None,
+        cv_splits: int = 3,
+        timeout: int | None = 180,  # 3 minute default timeout
         use_gpu: bool = False
     ) -> dict:
         """Tune XGBoost hyperparameters."""
+        from sklearn.model_selection import train_test_split
 
-        def objective(trial):
-            params = {
-                "n_estimators": trial.suggest_int("n_estimators", 50, 300),
-                "max_depth": trial.suggest_int("max_depth", 3, 12),
-                "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
-                "subsample": trial.suggest_float("subsample", 0.6, 1.0),
-                "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
-            }
+        # For GPU, use simple train/val split (much faster than CV)
+        # For CPU, use CV
+        y_mapped = y.map({-1: 0, 0: 1, 1: 2})
 
-            model = XGBoostModel(use_gpu=use_gpu, **params)
-            y_mapped = y.map({-1: 0, 0: 1, 1: 2})
-            tscv = TimeSeriesSplit(n_splits=cv_splits)
-
-            scores = cross_val_score(
-                model.model, X, y_mapped, cv=tscv, scoring="accuracy",
-                n_jobs=1 if use_gpu else -1
+        if use_gpu:
+            # Simple 80/20 split for GPU (CV is too slow with GPU)
+            X_train, X_val, y_train, y_val = train_test_split(
+                X, y_mapped, test_size=0.2, random_state=42
             )
-            return scores.mean()
+
+            def objective(trial):
+                params = {
+                    "n_estimators": trial.suggest_int("n_estimators", 50, 200),
+                    "max_depth": trial.suggest_int("max_depth", 3, 10),
+                    "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+                    "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+                    "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+                }
+
+                model = XGBoostModel(use_gpu=True, **params)
+                model.model.fit(X_train, y_train)
+                preds = model.model.predict(X_val)
+                accuracy = (preds == y_val).mean()
+                return accuracy
+        else:
+            def objective(trial):
+                params = {
+                    "n_estimators": trial.suggest_int("n_estimators", 50, 200),
+                    "max_depth": trial.suggest_int("max_depth", 3, 10),
+                    "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+                    "subsample": trial.suggest_float("subsample", 0.6, 1.0),
+                    "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
+                }
+
+                model = XGBoostModel(use_gpu=False, **params)
+                tscv = TimeSeriesSplit(n_splits=cv_splits)
+
+                scores = cross_val_score(
+                    model.model, X, y_mapped, cv=tscv, scoring="accuracy", n_jobs=-1
+                )
+                return scores.mean()
 
         return self._run_study("xgb_tuning", objective, n_trials, timeout, "maximize")
 
@@ -80,20 +104,20 @@ class HyperparameterTuner:
         self,
         X: pd.DataFrame,
         y: pd.Series,
-        n_trials: int = 30,
-        timeout: int | None = None
+        n_trials: int = 20,
+        timeout: int | None = 300  # 5 minute default timeout (LSTM is slower)
     ) -> dict:
         """Tune LSTM hyperparameters."""
 
         def objective(trial):
             params = {
-                "sequence_length": trial.suggest_int("sequence_length", 10, 50),
-                "hidden_size": trial.suggest_categorical("hidden_size", [32, 64, 128, 256]),
-                "num_layers": trial.suggest_int("num_layers", 1, 3),
-                "dropout": trial.suggest_float("dropout", 0.1, 0.5),
+                "sequence_length": trial.suggest_int("sequence_length", 10, 30),
+                "hidden_size": trial.suggest_categorical("hidden_size", [32, 64, 128]),
+                "num_layers": trial.suggest_int("num_layers", 1, 2),
+                "dropout": trial.suggest_float("dropout", 0.1, 0.4),
                 "learning_rate": trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True),
-                "batch_size": trial.suggest_categorical("batch_size", [16, 32, 64]),
-                "epochs": 30,  # Fixed for tuning speed
+                "batch_size": trial.suggest_categorical("batch_size", [32, 64]),
+                "epochs": 15,  # Reduced for faster tuning
             }
 
             # Simple train/val split for LSTM

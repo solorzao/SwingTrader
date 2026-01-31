@@ -1038,10 +1038,15 @@ class TrainingTab(QWidget):
             # Auto-tune hyperparameters if enabled
             tuned_params = {}
             if use_autotune:
-                update_progress(f"Auto-tuning {model_type} ({n_trials} trials)... This may take a while", 35)
                 from ..training.tuner import HyperparameterTuner
                 import optuna
                 optuna.logging.set_verbosity(optuna.logging.WARNING)  # Reduce Optuna console spam
+
+                # Show model-specific timing expectations
+                if model_type == "LSTM":
+                    update_progress(f"Auto-tuning {model_type} ({n_trials} trials, max 5 min)...", 35)
+                else:
+                    update_progress(f"Auto-tuning {model_type} ({n_trials} trials, max 3 min)...", 35)
 
                 tuner = HyperparameterTuner()
 
@@ -1059,7 +1064,7 @@ class TrainingTab(QWidget):
                     tuned_params = result.get("best_params", {})
                     actual_trials = result.get("n_trials", n_trials)
                     best_score = result.get("best_value", 0)
-                    update_progress(f"Tuning complete! {actual_trials} trials, best score: {best_score:.3f}", 50)
+                    update_progress(f"Tuning done! {actual_trials} trials, best: {best_score:.1%}", 50)
                 except Exception as e:
                     import traceback
                     print(f"Tuning error: {traceback.format_exc()}")  # Log full error to console
