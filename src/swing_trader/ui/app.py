@@ -392,38 +392,82 @@ class SignalsTab(QWidget):
         self.status_label.setText("Scanning...")
         self.scan_btn.setEnabled(False)
 
-        def scan():
+        model_name = self.model_combo.currentData()
+        filter_type = self.filter_combo.currentText()
+
+        def scan(progress_callback=None):
             from ..data.fetcher import StockDataFetcher
             from ..features.indicators import TechnicalIndicators
+            from ..services import ModelRegistry
+
             tickers = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "JPM", "V", "WMT"]
             fetcher = StockDataFetcher()
             indicators = TechnicalIndicators()
+
+            model = None
+            if model_name:
+                registry = ModelRegistry()
+                model = registry.get_model(model_name)
+
             results = []
-            for ticker in tickers:
+            for i, ticker in enumerate(tickers):
+                if progress_callback:
+                    progress_callback(f"Scanning {ticker}...", int((i / len(tickers)) * 100))
+
                 try:
                     data = fetcher.fetch(ticker, period="6mo")
                     if data is None or data.empty:
                         continue
                     data = indicators.add_all(data)
                     latest = data.iloc[-1]
-                    rsi = latest.get('rsi_14', 50)
-                    macd = latest.get('macd', 0)
-                    macd_signal = latest.get('macd_signal', 0)
-                    if rsi < 30 and macd > macd_signal:
-                        signal, conf = "BUY", min(1.0, (30 - rsi) / 30 + 0.5)
-                    elif rsi > 70 and macd < macd_signal:
-                        signal, conf = "SELL", min(1.0, (rsi - 70) / 30 + 0.5)
+
+                    if model:
+                        # Use ML model
+                        predictions = model.predict(data)
+                        probas = model.predict_proba(data)
+
+                        # Get latest prediction
+                        latest_pred = predictions[-1]
+                        latest_proba = probas[-1]
+
+                        signal = "BUY" if latest_pred == 1 else "SELL" if latest_pred == -1 else "HOLD"
+                        confidence = float(max(latest_proba))
                     else:
-                        signal, conf = "HOLD", 0.5
-                    results.append({"ticker": ticker, "signal": signal, "confidence": conf,
-                                   "price": latest['close'], "rsi": rsi})
-                except:
+                        # Fallback to RSI/MACD
+                        rsi = latest.get('rsi_14', 50)
+                        macd = latest.get('macd', 0)
+                        macd_signal = latest.get('macd_signal', 0)
+
+                        if rsi < 30 and macd > macd_signal:
+                            signal, confidence = "BUY", min(1.0, (30 - rsi) / 30 + 0.5)
+                        elif rsi > 70 and macd < macd_signal:
+                            signal, confidence = "SELL", min(1.0, (rsi - 70) / 30 + 0.5)
+                        else:
+                            signal, confidence = "HOLD", 0.5
+
+                    # Apply filter
+                    if filter_type == "BUY Only" and signal != "BUY":
+                        continue
+                    if filter_type == "SELL Only" and signal != "SELL":
+                        continue
+
+                    results.append({
+                        "ticker": ticker,
+                        "signal": signal,
+                        "confidence": confidence,
+                        "price": latest['close'],
+                        "rsi": latest.get('rsi_14', 0)
+                    })
+                except Exception as e:
+                    print(f"Error scanning {ticker}: {e}")
                     continue
+
             return results
 
         self.worker = WorkerThread(scan)
         self.worker.finished.connect(self.on_scan_complete)
         self.worker.error.connect(self.on_error)
+        self.worker.progress.connect(lambda msg, pct: self.status_label.setText(msg))
         self.worker.start()
 
     def on_scan_complete(self, results):
