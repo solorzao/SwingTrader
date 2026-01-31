@@ -1,0 +1,10 @@
+1. on_train() called
+2. UI updated
+3. model_type = XGBoost
+4. Got basic values
+5. Got common params
+6. Got LSTM params
+7. About to create WorkerThread
+8. WorkerThread created
+9. Signals connected, calling start()
+10. start() returned

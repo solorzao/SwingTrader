@@ -1,0 +1,37 @@
+Train function started
+All imports done
+Tickers: ['AAPL', 'MSFT', 'GOOGL']
+Fetching AAPL...
+Got 202 rows for AAPL
+Fetching MSFT...
+Got 202 rows for MSFT
+Fetching GOOGL...
+Got 202 rows for GOOGL
+Combined data: 591 rows, 17 features
+Train/test split: 472/119
+Model type: XGBoost
+XGBoost GPU: True
+Starting model.fit() with 472 samples...
+EXCEPTION: XGBoostError: Invalid Input: 'gpu_hist', valid values are: {'approx', 'auto', 'exact', 'hist'}
+Traceback (most recent call last):
+  File "C:\Users\Oliver\source\repos\swing-trader\src\swing_trader\ui\app.py", line 672, in train
+    feature_importance = None
+  File "C:\Users\Oliver\source\repos\swing-trader\src\swing_trader\models\xgboost_model.py", line 56, in fit
+    self.model.fit(X_prep, y_mapped, **kwargs)
+  File "C:\Users\Oliver\source\repos\swing-trader\.venv\Lib\site-packages\xgboost\core.py", line 774, in inner_f
+    return func(**kwargs)
+           ^^^^^^^^^^^^^^
+  File "C:\Users\Oliver\source\repos\swing-trader\.venv\Lib\site-packages\xgboost\sklearn.py", line 1808, in fit
+    self._Booster = train(
+                    ^^^^^^
+  File "C:\Users\Oliver\source\repos\swing-trader\.venv\Lib\site-packages\xgboost\core.py", line 774, in inner_f
+    return func(**kwargs)
+           ^^^^^^^^^^^^^^
+  File "C:\Users\Oliver\source\repos\swing-trader\.venv\Lib\site-packages\xgboost\training.py", line 199, in train
+    bst.update(dtrain, iteration=i, fobj=obj)
+  File "C:\Users\Oliver\source\repos\swing-trader\.venv\Lib\site-packages\xgboost\core.py", line 2433, in update
+    _check_call(
+  File "C:\Users\Oliver\source\repos\swing-trader\.venv\Lib\site-packages\xgboost\core.py", line 323, in _check_call
+    raise XGBoostError(py_str(_LIB.XGBGetLastError()))
+xgboost.core.XGBoostError: Invalid Input: 'gpu_hist', valid values are: {'approx', 'auto', 'exact', 'hist'}
+

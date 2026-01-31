@@ -1,0 +1,1 @@
+<frozen runpy>:128: RuntimeWarning: 'swing_trader.ui.app' found in sys.modules after import of package 'swing_trader.ui', but prior to execution of 'swing_trader.ui.app'; this may result in unpredictable behaviour

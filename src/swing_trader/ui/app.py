@@ -157,6 +157,7 @@ def create_chart_canvas(parent=None, width=5, height=4):
 class WorkerThread(QThread):
     finished = pyqtSignal(object)
     error = pyqtSignal(str)
+    progress = pyqtSignal(str, int)  # status message, progress percentage
 
     def __init__(self, func, *args, **kwargs):
         super().__init__()
@@ -166,10 +167,22 @@ class WorkerThread(QThread):
 
     def run(self):
         try:
-            result = self.func(*self.args, **self.kwargs)
+            # Pass progress callback if the function accepts it
+            result = self.func(*self.args, progress_callback=self.progress.emit, **self.kwargs)
             self.finished.emit(result)
+        except TypeError:
+            # Function doesn't accept progress_callback
+            try:
+                result = self.func(*self.args, **self.kwargs)
+                self.finished.emit(result)
+            except Exception as e:
+                import traceback
+                error_msg = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
+                self.error.emit(error_msg)
         except Exception as e:
-            self.error.emit(str(e))
+            import traceback
+            error_msg = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
+            self.error.emit(error_msg)
 
 
 class SignalsTab(QWidget):
@@ -382,17 +395,6 @@ class TrainingTab(QWidget):
         self.setup_rf_hyperparams()
         left_layout.addWidget(self.hyperparam_group)
 
-        # GPU acceleration checkbox
-        self.gpu_checkbox = QCheckBox("Use GPU Acceleration")
-        gpu_available = self.check_gpu_available()
-        self.gpu_checkbox.setEnabled(gpu_available)
-        if gpu_available:
-            self.gpu_checkbox.setToolTip("Enable CUDA GPU acceleration for faster training")
-        else:
-            self.gpu_checkbox.setToolTip("GPU not available. Install PyTorch with CUDA:\npip install torch --index-url https://download.pytorch.org/whl/cu121")
-            self.gpu_checkbox.setStyleSheet("color: #6E7681;")
-        left_layout.addWidget(self.gpu_checkbox)
-
         self.train_btn = QPushButton("Start Training")
         self.train_btn.clicked.connect(self.on_train)
         left_layout.addWidget(self.train_btn)
@@ -451,6 +453,12 @@ class TrainingTab(QWidget):
         layout.addWidget(right_panel, 1)
 
     def clear_hyperparam_layout(self):
+        # Remove Python references to widgets before deleting them
+        for attr in ['n_estimators_spin', 'max_depth_spin', 'min_samples_spin',
+                     'learning_rate_spin', 'hidden_size_spin', 'num_layers_spin', 'epochs_spin']:
+            if hasattr(self, attr):
+                delattr(self, attr)
+
         while self.hyperparam_layout.count():
             item = self.hyperparam_layout.takeAt(0)
             if item.widget():
@@ -529,13 +537,6 @@ class TrainingTab(QWidget):
         self.learning_rate_spin.setDecimals(4)
         self.hyperparam_layout.addWidget(self.learning_rate_spin)
 
-    def check_gpu_available(self):
-        try:
-            import torch
-            return torch.cuda.is_available()
-        except:
-            return False
-
     def on_model_changed(self, model_name):
         if model_name == "Random Forest":
             self.setup_rf_hyperparams()
@@ -553,7 +554,6 @@ class TrainingTab(QWidget):
 
         # Capture ALL UI values before starting thread (Qt widgets can't be accessed from threads)
         model_type = self.model_combo.currentText()
-        use_gpu = self.gpu_checkbox.isChecked() and self.gpu_checkbox.isEnabled()
         tickers_text = self.tickers_input.text()
         period = self.period_combo.currentText()
 
@@ -573,7 +573,11 @@ class TrainingTab(QWidget):
         epochs_spin = getattr(self, 'epochs_spin', None)
         epochs = epochs_spin.value() if epochs_spin else 30
 
-        def train():
+        def train(progress_callback=None):
+            def update_progress(msg, pct):
+                if progress_callback:
+                    progress_callback(msg, pct)
+
             from ..data.fetcher import StockDataFetcher
             from ..features.indicators import TechnicalIndicators
             from ..features.labeler import SignalLabeler
@@ -585,8 +589,10 @@ class TrainingTab(QWidget):
             indicators = TechnicalIndicators()
             labeler = SignalLabeler()
 
+            update_progress("Fetching market data...", 10)
             all_data = []
-            for ticker in tickers:
+            for i, ticker in enumerate(tickers):
+                update_progress(f"Fetching {ticker}...", 10 + (i * 20 // len(tickers)))
                 data = fetcher.fetch(ticker, period=period)
                 if data is not None and not data.empty:
                     data = indicators.add_all(data)
@@ -596,6 +602,7 @@ class TrainingTab(QWidget):
             if not all_data:
                 return None
 
+            update_progress("Preparing features...", 30)
             combined = pd.concat(all_data, ignore_index=True).dropna()
             exclude_cols = ['open', 'high', 'low', 'close', 'volume', 'label']
             feature_cols = [c for c in combined.columns if c not in exclude_cols]
@@ -606,6 +613,8 @@ class TrainingTab(QWidget):
             from sklearn.model_selection import train_test_split
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
+            update_progress(f"Training {model_type}...", 40)
+
             # Create model based on selection
             is_lstm = False
             if model_type == "Random Forest":
@@ -614,6 +623,8 @@ class TrainingTab(QWidget):
                 model = RandomForestModel(n_estimators=n_estimators, max_depth=md)
             elif model_type == "XGBoost":
                 from ..models.xgboost_model import XGBoostModel
+                # Auto-detect GPU availability
+                use_gpu = torch.cuda.is_available()
                 model = XGBoostModel(
                     n_estimators=n_estimators,
                     max_depth=max_depth,
@@ -622,7 +633,8 @@ class TrainingTab(QWidget):
                 )
             elif model_type == "LSTM":
                 from ..models.lstm import LSTMModel
-                device = "cuda" if use_gpu else "cpu"
+                # Auto-detect CUDA - use GPU if available, fallback to CPU
+                device = "cuda" if torch.cuda.is_available() else "cpu"
                 model = LSTMModel(
                     hidden_size=hidden_size,
                     num_layers=num_layers,
@@ -637,6 +649,8 @@ class TrainingTab(QWidget):
                 model = RandomForestModel(n_estimators=n_estimators, max_depth=md)
 
             model.fit(X_train, y_train)
+
+            update_progress("Calculating metrics...", 80)
 
             # Calculate comprehensive metrics
             from sklearn.metrics import (
@@ -662,7 +676,6 @@ class TrainingTab(QWidget):
             # AUC requires probability predictions
             try:
                 y_proba = model.predict_proba(X_test)
-                # For multi-class, use one-vs-rest AUC
                 auc = roc_auc_score(y_true, y_proba, multi_class='ovr', average='weighted')
             except:
                 auc = None
@@ -677,9 +690,10 @@ class TrainingTab(QWidget):
                 feature_names = top_features.index.tolist()
                 feature_importance = top_features.values.tolist()
             except (AttributeError, NotImplementedError):
-                # LSTM and some models don't have feature importance
                 feature_names = feature_cols[:10]
                 feature_importance = None
+
+            update_progress("Saving model...", 95)
 
             # Save model
             Path("models").mkdir(exist_ok=True)
@@ -702,7 +716,12 @@ class TrainingTab(QWidget):
         self.worker = WorkerThread(train)
         self.worker.finished.connect(self.on_train_complete)
         self.worker.error.connect(self.on_error)
+        self.worker.progress.connect(self.on_train_progress)
         self.worker.start()
+
+    def on_train_progress(self, message, percent):
+        self.status_label.setText(message)
+        self.progress_bar.setValue(percent)
 
     def on_train_complete(self, result):
         self.train_btn.setEnabled(True)
@@ -783,7 +802,10 @@ class TrainingTab(QWidget):
 
     def on_error(self, error):
         self.train_btn.setEnabled(True)
-        self.status_label.setText(f"Error: {error[:50]}")
+        # Show first line of error in status, print full error to console
+        first_line = error.split('\n')[0] if '\n' in error else error
+        self.status_label.setText(f"Error: {first_line[:60]}")
+        print(f"Training error:\n{error}")
 
 
 class BacktestTab(QWidget):

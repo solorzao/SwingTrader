@@ -36,7 +36,7 @@ class XGBoostModel(BaseModel):
         }
 
         if use_gpu:
-            model_params["tree_method"] = "gpu_hist"
+            # XGBoost 2.0+ uses device="cuda" for GPU acceleration
             model_params["device"] = "cuda"
 
         self.model = xgb.XGBClassifier(**model_params)
