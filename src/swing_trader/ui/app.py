@@ -1000,6 +1000,12 @@ class BacktestTab(QWidget):
         self.capital_spin.setPrefix("$")
         config_layout.addWidget(self.capital_spin)
 
+        config_layout.addWidget(QLabel("Model"))
+        self.model_combo = QComboBox()
+        self.model_combo.addItem("-- Select Model --")
+        config_layout.addWidget(self.model_combo)
+        self.refresh_model_list()
+
         self.run_btn = QPushButton("Run Backtest")
         self.run_btn.clicked.connect(self.on_run)
         config_layout.addWidget(self.run_btn)
@@ -1037,41 +1043,98 @@ class BacktestTab(QWidget):
         layout.addWidget(left_panel)
         layout.addWidget(right_panel, 1)
 
+    def refresh_model_list(self):
+        """Populate model dropdown from registry."""
+        from ..services import ModelRegistry
+        registry = ModelRegistry()
+
+        current = self.model_combo.currentText()
+        self.model_combo.clear()
+        self.model_combo.addItem("-- Select Model --")
+
+        for info in registry.list_models():
+            self.model_combo.addItem(f"{info.name} ({info.model_type})", info.name)
+
+        idx = self.model_combo.findText(current)
+        if idx >= 0:
+            self.model_combo.setCurrentIndex(idx)
+
+    def set_model(self, model_name: str):
+        """Set the selected model by name."""
+        for i in range(self.model_combo.count()):
+            if self.model_combo.itemData(i) == model_name:
+                self.model_combo.setCurrentIndex(i)
+                break
+
     def on_run(self):
         ticker = self.ticker_input.text().strip().upper()
         if not ticker:
             self.status_label.setText("Enter a ticker")
             return
-        self.status_label.setText(f"Running backtest...")
+        self.status_label.setText("Running backtest...")
         self.run_btn.setEnabled(False)
 
-        def backtest():
+        model_name = self.model_combo.currentData()
+        period = self.period_combo.currentText()
+        capital = self.capital_spin.value()
+
+        def backtest(progress_callback=None):
             from ..data.fetcher import StockDataFetcher
             from ..features.indicators import TechnicalIndicators
             from ..backtest.engine import BacktestEngine
+            from ..services import ModelRegistry
             import pandas as pd
+
+            if progress_callback:
+                progress_callback("Fetching data...", 20)
 
             fetcher = StockDataFetcher()
             indicators = TechnicalIndicators()
-            data = fetcher.fetch(ticker, period=self.period_combo.currentText())
+            data = fetcher.fetch(ticker, period=period)
+
             if data is None or data.empty:
                 return None
+
             data = indicators.add_all(data)
-            signals = pd.Series(index=data.index, data=0)
-            for i in range(len(data)):
-                rsi = data['rsi_14'].iloc[i] if 'rsi_14' in data.columns else 50
-                if pd.notna(rsi):
-                    if rsi < 30:
-                        signals.iloc[i] = 1
-                    elif rsi > 70:
-                        signals.iloc[i] = -1
-            engine = BacktestEngine()
-            result = engine.run(data, signals, initial_capital=self.capital_spin.value())
+
+            if progress_callback:
+                progress_callback("Generating signals...", 50)
+
+            if model_name:
+                # Use ML model
+                registry = ModelRegistry()
+                model = registry.get_model(model_name)
+                predictions = model.predict(data)
+
+                # Handle LSTM shorter output
+                if len(predictions) < len(data):
+                    pad = len(data) - len(predictions)
+                    predictions = np.concatenate([[0] * pad, predictions])
+
+                data['signal'] = predictions
+            else:
+                # Fallback to RSI strategy
+                data['signal'] = 0
+                for i in range(len(data)):
+                    rsi = data['rsi_14'].iloc[i] if 'rsi_14' in data.columns else 50
+                    if pd.notna(rsi):
+                        if rsi < 30:
+                            data.iloc[i, data.columns.get_loc('signal')] = 1
+                        elif rsi > 70:
+                            data.iloc[i, data.columns.get_loc('signal')] = -1
+
+            if progress_callback:
+                progress_callback("Running backtest...", 80)
+
+            engine = BacktestEngine(initial_capital=capital)
+            result = engine.run(data, signal_col='signal')
+
             return result
 
         self.worker = WorkerThread(backtest)
         self.worker.finished.connect(self.on_backtest_complete)
         self.worker.error.connect(self.on_error)
+        self.worker.progress.connect(lambda msg, pct: self.status_label.setText(msg))
         self.worker.start()
 
     def on_backtest_complete(self, result):
