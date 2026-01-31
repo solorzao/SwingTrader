@@ -1732,6 +1732,20 @@ class ModelsTab(QWidget):
         self.refresh_btn.clicked.connect(self.refresh_models)
         buttons_layout.addWidget(self.refresh_btn)
 
+        self.keep_best_btn = QPushButton("Keep Best Only")
+        self.keep_best_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1F6FEB;
+                padding: 8px 16px;
+            }
+            QPushButton:hover {
+                background-color: #388BFD;
+            }
+        """)
+        self.keep_best_btn.setToolTip("Delete all but the best model of each type (by F1 score)")
+        self.keep_best_btn.clicked.connect(self.on_keep_best)
+        buttons_layout.addWidget(self.keep_best_btn)
+
         self.delete_btn = QPushButton("Delete Selected")
         self.delete_btn.setStyleSheet("""
             QPushButton {
@@ -1987,6 +2001,79 @@ class ModelsTab(QWidget):
 
         if deleted < len(models_to_delete):
             QMessageBox.warning(self, "Warning", f"Deleted {deleted} of {len(models_to_delete)} models")
+
+    def on_keep_best(self):
+        """Keep only the best model of each type (by F1 score), delete the rest."""
+        if not self.registry:
+            return
+
+        models = self.registry.list_models()
+        if not models:
+            QMessageBox.information(self, "No Models", "No models to clean up.")
+            return
+
+        # Group models by type
+        by_type = {}
+        for model in models:
+            model_type = model.model_type
+            if model_type not in by_type:
+                by_type[model_type] = []
+            by_type[model_type].append(model)
+
+        # Find best of each type and models to delete
+        models_to_delete = []
+        kept_models = []
+
+        for model_type, type_models in by_type.items():
+            if len(type_models) <= 1:
+                # Only one model of this type, keep it
+                if type_models:
+                    kept_models.append(type_models[0])
+                continue
+
+            # Sort by F1 score (fallback to accuracy if F1 not available)
+            def get_score(m):
+                if m.metrics:
+                    return m.metrics.get("f1", m.metrics.get("accuracy", 0)) or 0
+                return 0
+
+            sorted_models = sorted(type_models, key=get_score, reverse=True)
+            best = sorted_models[0]
+            kept_models.append(best)
+            models_to_delete.extend(sorted_models[1:])
+
+        if not models_to_delete:
+            QMessageBox.information(self, "Already Clean", "Each model type already has only one model.")
+            return
+
+        # Build confirmation message
+        keep_list = "\n".join(f"  ✓ {m.model_type}: {m.metrics.get('f1', 0):.1%} F1" for m in kept_models)
+        delete_list = "\n".join(f"  • {m.model_type} ({m.created.strftime('%b %d, %H:%M')})"
+                                for m in models_to_delete[:5])
+        if len(models_to_delete) > 5:
+            delete_list += f"\n  ... and {len(models_to_delete) - 5} more"
+
+        msg = f"Keep best model of each type?\n\nKEEPING:\n{keep_list}\n\nDELETING ({len(models_to_delete)}):\n{delete_list}\n\nThis cannot be undone."
+
+        reply = QMessageBox.question(
+            self, "Keep Best Only",
+            msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # Delete non-best models
+        deleted = 0
+        for model in models_to_delete:
+            try:
+                self.registry.delete_model(model.name)
+                deleted += 1
+            except KeyError:
+                pass
+
+        self.refresh_models()
+        QMessageBox.information(self, "Cleanup Complete", f"Deleted {deleted} models, kept {len(kept_models)} best.")
 
     def on_use_model(self):
         """Emit signal when user wants to activate the selected model."""
