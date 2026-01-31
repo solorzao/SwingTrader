@@ -1026,8 +1026,11 @@ class TrainingTab(QWidget):
             # Auto-tune hyperparameters if enabled
             tuned_params = {}
             if use_autotune:
-                update_progress(f"Auto-tuning {model_type} ({n_trials} trials)...", 35)
+                update_progress(f"Auto-tuning {model_type} ({n_trials} trials)... This may take a while", 35)
                 from ..training.tuner import HyperparameterTuner
+                import optuna
+                optuna.logging.set_verbosity(optuna.logging.WARNING)  # Reduce Optuna console spam
+
                 tuner = HyperparameterTuner()
 
                 try:
@@ -1042,9 +1045,13 @@ class TrainingTab(QWidget):
                         result = tuner.tune_random_forest(X_train, y_train, n_trials=n_trials)
 
                     tuned_params = result.get("best_params", {})
-                    update_progress(f"Best params found (score: {result.get('best_value', 0):.3f})", 50)
+                    actual_trials = result.get("n_trials", n_trials)
+                    best_score = result.get("best_value", 0)
+                    update_progress(f"Tuning complete! {actual_trials} trials, best score: {best_score:.3f}", 50)
                 except Exception as e:
-                    update_progress(f"Tuning failed, using defaults: {str(e)[:30]}", 40)
+                    import traceback
+                    print(f"Tuning error: {traceback.format_exc()}")  # Log full error to console
+                    update_progress(f"Tuning failed: {str(e)[:50]}. Using defaults.", 40)
 
             update_progress(f"Training {model_type}...", 55)
 

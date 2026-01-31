@@ -121,6 +121,8 @@ class HyperparameterTuner:
         direction: str
     ) -> dict:
         """Run Optuna study with optional MLflow callback."""
+        from datetime import datetime
+
         callbacks = []
         if self.tracker:
             callbacks.append(MLflowCallback(
@@ -128,10 +130,13 @@ class HyperparameterTuner:
                 metric_name="cv_accuracy"
             ))
 
+        # Use unique study name with timestamp to avoid reusing cached results
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        unique_study_name = f"{study_name}_{timestamp}"
+
         self.study = optuna.create_study(
-            study_name=study_name,
+            study_name=unique_study_name,
             direction=direction,
-            load_if_exists=True
         )
 
         self.study.optimize(
