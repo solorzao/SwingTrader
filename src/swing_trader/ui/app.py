@@ -382,6 +382,13 @@ class TrainingTab(QWidget):
         self.setup_rf_hyperparams()
         left_layout.addWidget(self.hyperparam_group)
 
+        # GPU acceleration checkbox
+        self.gpu_checkbox = QCheckBox("Use GPU Acceleration")
+        self.gpu_checkbox.setEnabled(self.check_gpu_available())
+        if not self.gpu_checkbox.isEnabled():
+            self.gpu_checkbox.setToolTip("No CUDA GPU detected")
+        left_layout.addWidget(self.gpu_checkbox)
+
         self.train_btn = QPushButton("Start Training")
         self.train_btn.clicked.connect(self.on_train)
         left_layout.addWidget(self.train_btn)
@@ -518,6 +525,13 @@ class TrainingTab(QWidget):
         self.learning_rate_spin.setDecimals(4)
         self.hyperparam_layout.addWidget(self.learning_rate_spin)
 
+    def check_gpu_available(self):
+        try:
+            import torch
+            return torch.cuda.is_available()
+        except:
+            return False
+
     def on_model_changed(self, model_name):
         if model_name == "Random Forest":
             self.setup_rf_hyperparams()
@@ -535,6 +549,9 @@ class TrainingTab(QWidget):
 
         # Capture hyperparameters from UI
         model_type = self.model_combo.currentText()
+        use_gpu = self.gpu_checkbox.isChecked() and self.gpu_checkbox.isEnabled()
+
+        # Common params
         n_estimators = getattr(self, 'n_estimators_spin', None)
         n_estimators = n_estimators.value() if n_estimators else 100
         max_depth = getattr(self, 'max_depth_spin', None)
@@ -542,11 +559,18 @@ class TrainingTab(QWidget):
         learning_rate = getattr(self, 'learning_rate_spin', None)
         learning_rate = learning_rate.value() if learning_rate else 0.1
 
+        # LSTM params
+        hidden_size = getattr(self, 'hidden_size_spin', None)
+        hidden_size = hidden_size.value() if hidden_size else 64
+        num_layers = getattr(self, 'num_layers_spin', None)
+        num_layers = num_layers.value() if num_layers else 2
+        epochs = getattr(self, 'epochs_spin', None)
+        epochs = epochs.value() if epochs else 30
+
         def train():
             from ..data.fetcher import StockDataFetcher
             from ..features.indicators import TechnicalIndicators
             from ..features.labeler import SignalLabeler
-            from ..models.random_forest import RandomForestModel
             import pandas as pd
             from pathlib import Path
 
@@ -564,7 +588,7 @@ class TrainingTab(QWidget):
                     all_data.append(data)
 
             if not all_data:
-                return None, 0
+                return None
 
             combined = pd.concat(all_data, ignore_index=True).dropna()
             exclude_cols = ['open', 'high', 'low', 'close', 'volume', 'label']
@@ -576,9 +600,36 @@ class TrainingTab(QWidget):
             from sklearn.model_selection import train_test_split
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-            # Use hyperparameters from UI
-            md = max_depth if max_depth > 0 else None
-            model = RandomForestModel(n_estimators=n_estimators, max_depth=md)
+            # Create model based on selection
+            is_lstm = False
+            if model_type == "Random Forest":
+                from ..models.random_forest import RandomForestModel
+                md = max_depth if max_depth > 0 else None
+                model = RandomForestModel(n_estimators=n_estimators, max_depth=md)
+            elif model_type == "XGBoost":
+                from ..models.xgboost_model import XGBoostModel
+                model = XGBoostModel(
+                    n_estimators=n_estimators,
+                    max_depth=max_depth,
+                    learning_rate=learning_rate,
+                    use_gpu=use_gpu
+                )
+            elif model_type == "LSTM":
+                from ..models.lstm import LSTMModel
+                device = "cuda" if use_gpu else "cpu"
+                model = LSTMModel(
+                    hidden_size=hidden_size,
+                    num_layers=num_layers,
+                    epochs=epochs,
+                    learning_rate=learning_rate,
+                    device=device
+                )
+                is_lstm = True
+            else:  # All Models - use Random Forest as default
+                from ..models.random_forest import RandomForestModel
+                md = max_depth if max_depth > 0 else None
+                model = RandomForestModel(n_estimators=n_estimators, max_depth=md)
+
             model.fit(X_train, y_train)
 
             # Calculate comprehensive metrics
@@ -589,7 +640,13 @@ class TrainingTab(QWidget):
             import numpy as np
 
             predictions = model.predict(X_test)
-            y_true = y_test.values
+
+            # LSTM predictions are shorter due to sequence creation
+            if is_lstm:
+                seq_len = model.sequence_length
+                y_true = y_test.values[seq_len-1:]
+            else:
+                y_true = y_test.values
 
             accuracy = accuracy_score(y_true, predictions)
             precision = precision_score(y_true, predictions, average='weighted', zero_division=0)
@@ -607,23 +664,33 @@ class TrainingTab(QWidget):
             # Confusion matrix
             cm = confusion_matrix(y_true, predictions, labels=[-1, 0, 1])
 
-            # Get feature importance
-            importance = model.feature_importance()
-            top_features = importance.head(10)
+            # Get feature importance (if available)
+            try:
+                importance = model.feature_importance()
+                top_features = importance.head(10)
+                feature_names = top_features.index.tolist()
+                feature_importance = top_features.values.tolist()
+            except (AttributeError, NotImplementedError):
+                # LSTM and some models don't have feature importance
+                feature_names = feature_cols[:10]
+                feature_importance = None
 
+            # Save model
             Path("models").mkdir(exist_ok=True)
-            model.save(Path("models/random_forest.joblib"))
+            model_filename = model_type.lower().replace(" ", "_")
+            model.save(Path(f"models/{model_filename}_model.joblib"))
 
             return {
                 'samples': len(combined),
+                'model_type': model_type,
                 'accuracy': accuracy,
                 'precision': precision,
                 'recall': recall,
                 'f1': f1,
                 'auc': auc,
                 'confusion_matrix': cm.tolist(),
-                'feature_names': top_features.index.tolist(),
-                'feature_importance': top_features.values.tolist(),
+                'feature_names': feature_names,
+                'feature_importance': feature_importance,
             }
 
         self.worker = WorkerThread(train)
@@ -660,19 +727,27 @@ class TrainingTab(QWidget):
         else:
             self.metric_displays["AUC"].setText("N/A")
 
-        # Plot feature importance
+        # Plot feature importance (or show message if not available)
         self.importance_chart.axes.clear()
         feature_names = result['feature_names']
         importance = result['feature_importance']
 
-        y_pos = range(len(feature_names))
-        self.importance_chart.axes.barh(y_pos, importance, color='#58A6FF')
-        self.importance_chart.axes.set_yticks(y_pos)
-        self.importance_chart.axes.set_yticklabels(feature_names, fontsize=8)
-        self.importance_chart.axes.set_xlabel('Importance', color='#8B949E', fontsize=8)
+        if importance is not None:
+            y_pos = range(len(feature_names))
+            self.importance_chart.axes.barh(y_pos, importance, color='#58A6FF')
+            self.importance_chart.axes.set_yticks(y_pos)
+            self.importance_chart.axes.set_yticklabels(feature_names, fontsize=8)
+            self.importance_chart.axes.set_xlabel('Importance', color='#8B949E', fontsize=8)
+            self.importance_chart.axes.invert_yaxis()
+        else:
+            # LSTM doesn't have feature importance
+            self.importance_chart.axes.text(0.5, 0.5, f"Feature importance\nnot available for\n{result.get('model_type', 'this model')}",
+                ha='center', va='center', color='#6E7681', fontsize=12, transform=self.importance_chart.axes.transAxes)
+            self.importance_chart.axes.set_xticks([])
+            self.importance_chart.axes.set_yticks([])
+
         self.importance_chart.axes.set_facecolor('#0D1117')
         self.importance_chart.axes.tick_params(colors='#8B949E', labelsize=7)
-        self.importance_chart.axes.invert_yaxis()
         self.importance_chart.fig.tight_layout()
         self.importance_chart.draw()
 
