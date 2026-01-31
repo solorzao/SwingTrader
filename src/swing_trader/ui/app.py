@@ -1396,12 +1396,40 @@ class SwingTraderApp(QMainWindow):
         header_layout.addStretch()
         layout.addWidget(header)
 
-        tabs = QTabWidget()
-        tabs.addTab(SignalsTab(), "  Signals  ")
-        tabs.addTab(TrainingTab(), "  Training  ")
-        tabs.addTab(BacktestTab(), "  Backtest  ")
-        tabs.addTab(ModelsTab(), "  Models  ")
-        layout.addWidget(tabs)
+        self.tabs = QTabWidget()
+
+        # Create tabs and store references
+        self.signals_tab = SignalsTab()
+        self.training_tab = TrainingTab()
+        self.backtest_tab = BacktestTab()
+        self.models_tab = ModelsTab()
+
+        self.tabs.addTab(self.signals_tab, "  Signals  ")
+        self.tabs.addTab(self.training_tab, "  Training  ")
+        self.tabs.addTab(self.backtest_tab, "  Backtest  ")
+        self.tabs.addTab(self.models_tab, "  Models  ")
+
+        # Connect model selection from Models tab to other tabs
+        self.models_tab.model_selected.connect(self.on_model_selected)
+
+        # Refresh model lists when switching to relevant tabs
+        self.tabs.currentChanged.connect(self.on_tab_changed)
+
+        layout.addWidget(self.tabs)
+
+    def on_model_selected(self, model_name: str):
+        """Handle model selection from Models tab."""
+        self.signals_tab.set_model(model_name)
+        self.backtest_tab.set_model(model_name)
+        self.tabs.setCurrentWidget(self.signals_tab)
+
+    def on_tab_changed(self, index: int):
+        """Refresh model lists when switching tabs."""
+        widget = self.tabs.widget(index)
+        if hasattr(widget, 'refresh_model_list'):
+            widget.refresh_model_list()
+        if hasattr(widget, 'refresh_models'):
+            widget.refresh_models()
 
 
 def main():
