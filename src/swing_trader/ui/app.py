@@ -623,6 +623,7 @@ class TrainingTab(QWidget):
         super().__init__()
         self.worker = None
         self.mlflow_process = None
+        self._stop_requested = False
         self.setup_ui()
 
     def setup_ui(self):
@@ -739,9 +740,26 @@ class TrainingTab(QWidget):
         left_layout.addWidget(tune_group)
 
         # Training buttons
+        train_btn_layout = QHBoxLayout()
         self.train_btn = QPushButton("Start Training")
         self.train_btn.clicked.connect(self.on_train)
-        left_layout.addWidget(self.train_btn)
+        train_btn_layout.addWidget(self.train_btn)
+
+        self.stop_btn = QPushButton("Stop")
+        self.stop_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #DA3633;
+                padding: 10px 15px;
+            }
+            QPushButton:hover {
+                background-color: #F85149;
+            }
+        """)
+        self.stop_btn.clicked.connect(self.on_stop)
+        self.stop_btn.setVisible(False)
+        train_btn_layout.addWidget(self.stop_btn)
+
+        left_layout.addLayout(train_btn_layout)
 
         # MLflow button
         mlflow_layout = QHBoxLayout()
@@ -964,9 +982,18 @@ class TrainingTab(QWidget):
             }
         }
 
+    def on_stop(self):
+        """Request training to stop."""
+        self._stop_requested = True
+        self.status_label.setText("Stopping... please wait")
+        self.stop_btn.setEnabled(False)
+
     def on_train(self):
         self.status_label.setText("Starting training...")
         self.train_btn.setEnabled(False)
+        self.stop_btn.setVisible(True)
+        self.stop_btn.setEnabled(True)
+        self._stop_requested = False
         self.progress_bar.setValue(0)
 
         # Capture ALL UI values before starting thread (Qt widgets can't be accessed from threads)
@@ -995,10 +1022,18 @@ class TrainingTab(QWidget):
         epochs_spin = getattr(self, 'epochs_spin', None)
         epochs = epochs_spin.value() if epochs_spin else 30
 
+        # Capture reference to self for stop checking
+        training_tab = self
+
         def train(progress_callback=None):
             def update_progress(msg, pct):
                 if progress_callback:
                     progress_callback(msg, pct)
+
+            def check_cancelled():
+                """Check if training was cancelled and raise exception if so."""
+                if training_tab._stop_requested:
+                    raise InterruptedError("Training cancelled by user")
 
             from ..data.fetcher import StockDataFetcher
             from ..features.indicators import TechnicalIndicators
@@ -1014,6 +1049,7 @@ class TrainingTab(QWidget):
             update_progress("Fetching market data...", 10)
             all_data = []
             for i, ticker in enumerate(tickers):
+                check_cancelled()
                 update_progress(f"Fetching {ticker}...", 10 + (i * 20 // len(tickers)))
                 data = fetcher.fetch(ticker, period=period)
                 if data is not None and not data.empty:
@@ -1021,6 +1057,7 @@ class TrainingTab(QWidget):
                     data['label'] = labeler.create_labels(data)
                     all_data.append(data)
 
+            check_cancelled()
             if not all_data:
                 return None
 
@@ -1034,6 +1071,8 @@ class TrainingTab(QWidget):
             # Split data for training and validation
             from sklearn.model_selection import train_test_split
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+            check_cancelled()
 
             # Auto-tune hyperparameters if enabled
             tuned_params = {}
@@ -1051,6 +1090,7 @@ class TrainingTab(QWidget):
                 tuner = HyperparameterTuner()
 
                 try:
+                    check_cancelled()
                     if model_type == "Random Forest":
                         result = tuner.tune_random_forest(X_train, y_train, n_trials=n_trials)
                     elif model_type == "XGBoost":
@@ -1070,6 +1110,7 @@ class TrainingTab(QWidget):
                     print(f"Tuning error: {traceback.format_exc()}")  # Log full error to console
                     update_progress(f"Tuning failed: {str(e)[:50]}. Using defaults.", 40)
 
+            check_cancelled()
             update_progress(f"Training {model_type}...", 55)
 
             # Create model based on selection (use tuned params if available)
@@ -1271,7 +1312,15 @@ class TrainingTab(QWidget):
 
     def on_train_complete(self, result):
         self.train_btn.setEnabled(True)
+        self.stop_btn.setVisible(False)
         self.progress_bar.setValue(100)
+
+        # Check if cancelled
+        if self._stop_requested:
+            self.status_label.setText("Training cancelled")
+            self._stop_requested = False
+            return
+
         if result is None or (isinstance(result, dict) and result.get('samples') is None):
             self.status_label.setText("No data collected")
             return
@@ -1351,6 +1400,14 @@ class TrainingTab(QWidget):
 
     def on_error(self, error):
         self.train_btn.setEnabled(True)
+        self.stop_btn.setVisible(False)
+
+        # Check if this was a user cancellation
+        if "cancelled by user" in error.lower() or "interrupted" in error.lower():
+            self.status_label.setText("Training cancelled")
+            self._stop_requested = False
+            return
+
         # Show first line of error in status, print full error to console
         first_line = error.split('\n')[0] if '\n' in error else error
         self.status_label.setText(f"Error: {first_line[:60]}")
