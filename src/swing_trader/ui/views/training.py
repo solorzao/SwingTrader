@@ -307,6 +307,24 @@ class TrainingView:
                         model_filename = model_name.lower().replace(" ", "_").replace("(", "").replace(")", "").replace("_gpu", "").replace("_cuda", "")
                         model.save(models_dir / f"{model_filename}.joblib")
 
+                        # Save training metadata for overlap detection
+                        try:
+                            from ...training.metadata import TrainingMetadataStore, TrainingInfo
+                            import pandas as pd
+                            train_data = all_data[0]  # Get date range from first ticker
+                            meta_store = TrainingMetadataStore(models_dir="models")
+                            meta_info = TrainingInfo(
+                                train_start=str(train_data.index.min().date()) if hasattr(train_data.index.min(), 'date') else str(train_data.index.min()),
+                                train_end=str(train_data.index.max().date()) if hasattr(train_data.index.max(), 'date') else str(train_data.index.max()),
+                                tickers=tickers,
+                                model_type=model_name,
+                                model_filename=f"{model_filename}.joblib",
+                                forward_days=self.labeler.forward_days,
+                            )
+                            meta_store.save(meta_info)
+                        except Exception:
+                            pass  # Non-fatal
+
                         dpg.set_value("train_progress", progress_base + 0.15)
 
                     finally:
@@ -333,9 +351,13 @@ class TrainingView:
         thread.start()
 
     def _evaluate_model(self, model, X, y):
-        """Evaluate model accuracy."""
-        from sklearn.model_selection import train_test_split
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        """Evaluate model accuracy using temporal split (not random)."""
+        # Temporal split: first 80% for train, last 20% for test
+        # This respects time-series ordering and prevents future data leakage
+        split_idx = int(len(X) * 0.8)
+        gap = 5  # forward_days gap to prevent label leakage
+        X_test = X[split_idx + gap:]
+        y_test = y[split_idx + gap:]
         predictions = model.predict(X_test)
         accuracy = (predictions == y_test).mean()
         return accuracy

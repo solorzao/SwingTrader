@@ -12,9 +12,9 @@ from PyQt6.QtWidgets import (
     QTabWidget, QLabel, QLineEdit, QPushButton, QComboBox, QSlider,
     QCheckBox, QProgressBar, QTableWidget, QTableWidgetItem, QGroupBox,
     QSpinBox, QDoubleSpinBox, QHeaderView, QSplitter, QFrame, QScrollArea,
-    QMessageBox
+    QMessageBox, QDateEdit
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QDate
 from PyQt6.QtGui import QFont, QColor, QPalette
 
 
@@ -651,11 +651,80 @@ class TrainingTab(QWidget):
         self.tickers_input = QLineEdit("AAPL, MSFT, GOOGL")
         train_layout.addWidget(self.tickers_input)
 
-        train_layout.addWidget(QLabel("Data Period"))
-        self.period_combo = QComboBox()
-        self.period_combo.addItems(["3mo", "6mo", "1y", "2y", "5y"])
-        self.period_combo.setCurrentText("1y")
-        train_layout.addWidget(self.period_combo)
+        # Date range inputs
+        train_layout.addWidget(QLabel("Training Date Range"))
+
+        # Preset buttons for quick date range selection
+        preset_layout = QHBoxLayout()
+        for label, months in [("6M", 6), ("1Y", 12), ("2Y", 24), ("5Y", 60)]:
+            btn = QPushButton(label)
+            btn.setFixedWidth(50)
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #21262D;
+                    padding: 4px 8px;
+                    font-size: 11px;
+                }
+                QPushButton:hover {
+                    background-color: #30363D;
+                }
+            """)
+            btn.clicked.connect(lambda checked, m=months: self._set_date_preset(m))
+            preset_layout.addWidget(btn)
+        preset_layout.addStretch()
+        train_layout.addLayout(preset_layout)
+
+        from datetime import date
+        from dateutil.relativedelta import relativedelta
+
+        date_row = QHBoxLayout()
+        date_row.addWidget(QLabel("From"))
+        self.train_start_date = QDateEdit()
+        self.train_start_date.setCalendarPopup(True)
+        self.train_start_date.setDisplayFormat("yyyy-MM-dd")
+        default_start = date.today() - relativedelta(years=1)
+        self.train_start_date.setDate(QDate(default_start.year, default_start.month, default_start.day))
+        self.train_start_date.dateChanged.connect(self._update_split_preview)
+        date_row.addWidget(self.train_start_date)
+
+        date_row.addWidget(QLabel("To"))
+        self.train_end_date = QDateEdit()
+        self.train_end_date.setCalendarPopup(True)
+        self.train_end_date.setDisplayFormat("yyyy-MM-dd")
+        self.train_end_date.setDate(QDate.currentDate())
+        self.train_end_date.dateChanged.connect(self._update_split_preview)
+        date_row.addWidget(self.train_end_date)
+        train_layout.addLayout(date_row)
+
+        # Train/Validation split visualization
+        split_group = QGroupBox("DATA SPLIT")
+        split_layout = QVBoxLayout(split_group)
+
+        split_ratio_layout = QHBoxLayout()
+        split_ratio_layout.addWidget(QLabel("Train / Validation"))
+        self.split_slider = QSlider(Qt.Orientation.Horizontal)
+        self.split_slider.setRange(50, 90)
+        self.split_slider.setValue(80)
+        self.split_slider.valueChanged.connect(self._update_split_preview)
+        split_ratio_layout.addWidget(self.split_slider)
+        self.split_label = QLabel("80 / 20")
+        self.split_label.setFixedWidth(50)
+        split_ratio_layout.addWidget(self.split_label)
+        split_layout.addLayout(split_ratio_layout)
+
+        # Visual timeline bar
+        self.split_timeline = QLabel()
+        self.split_timeline.setFixedHeight(24)
+        self.split_timeline.setStyleSheet("background-color: #21262D; border-radius: 4px;")
+        split_layout.addWidget(self.split_timeline)
+
+        # Split date info
+        self.split_info_label = QLabel("")
+        self.split_info_label.setStyleSheet("color: #8B949E; font-size: 11px;")
+        self.split_info_label.setWordWrap(True)
+        split_layout.addWidget(self.split_info_label)
+
+        train_layout.addWidget(split_group)
 
         left_layout.addWidget(train_group)
 
@@ -862,6 +931,9 @@ class TrainingTab(QWidget):
         layout.addWidget(left_scroll)
         layout.addWidget(right_panel, 1)
 
+        # Initialize the split preview
+        self._update_split_preview()
+
     def clear_hyperparam_layout(self):
         # Remove Python references to widgets before deleting them
         for attr in ['n_estimators_spin', 'max_depth_spin', 'min_samples_spin',
@@ -1015,6 +1087,63 @@ class TrainingTab(QWidget):
         self.ema_label.setVisible(checked)
         self.ema_periods_input.setVisible(checked)
 
+    def _set_date_preset(self, months: int):
+        """Set date range from a preset (e.g., 6M, 1Y, 2Y, 5Y)."""
+        from datetime import date
+        from dateutil.relativedelta import relativedelta
+        end = date.today()
+        start = end - relativedelta(months=months)
+        self.train_start_date.setDate(QDate(start.year, start.month, start.day))
+        self.train_end_date.setDate(QDate(end.year, end.month, end.day))
+
+    def _update_split_preview(self):
+        """Update the train/validation split timeline visualization."""
+        from datetime import date
+
+        split_pct = self.split_slider.value()
+        val_pct = 100 - split_pct
+        self.split_label.setText(f"{split_pct} / {val_pct}")
+
+        start_q = self.train_start_date.date()
+        end_q = self.train_end_date.date()
+        start = date(start_q.year(), start_q.month(), start_q.day())
+        end = date(end_q.year(), end_q.month(), end_q.day())
+        total_days = (end - start).days
+
+        if total_days <= 0:
+            self.split_info_label.setText("Invalid date range")
+            return
+
+        from datetime import timedelta
+        split_days = int(total_days * split_pct / 100)
+        split_date = start + timedelta(days=split_days)
+        gap_days = 5  # forward_days for label gap
+        val_start = split_date + timedelta(days=gap_days)
+
+        # Update the visual timeline bar with colored segments
+        train_width_pct = split_pct
+        gap_width_pct = min(5, val_pct)  # Small gap indicator
+        val_width_pct = 100 - train_width_pct - gap_width_pct
+
+        self.split_timeline.setStyleSheet(f"""
+            background: qlineargradient(
+                x1:0, y1:0, x2:1, y2:0,
+                stop:0 #238636,
+                stop:{train_width_pct / 100 - 0.001} #238636,
+                stop:{train_width_pct / 100} #DA3633,
+                stop:{(train_width_pct + gap_width_pct) / 100 - 0.001} #DA3633,
+                stop:{(train_width_pct + gap_width_pct) / 100} #58A6FF,
+                stop:1 #58A6FF
+            );
+            border-radius: 4px;
+        """)
+
+        self.split_info_label.setText(
+            f"Train: {start.isoformat()} to {split_date.isoformat()} ({split_days} days)  |  "
+            f"Gap: {gap_days} days  |  "
+            f"Validation: {val_start.isoformat()} to {end.isoformat()} ({(end - val_start).days} days)"
+        )
+
     def on_launch_mlflow(self):
         """Launch MLflow UI in browser."""
         import webbrowser
@@ -1078,8 +1207,15 @@ class TrainingTab(QWidget):
         # Capture ALL UI values before starting thread (Qt widgets can't be accessed from threads)
         model_type = self.model_combo.currentText()
         tickers_text = self.tickers_input.text()
-        period = self.period_combo.currentText()
         feature_config = self.get_feature_config()
+
+        # Capture date range and split ratio
+        from datetime import date as date_cls, timedelta
+        start_q = self.train_start_date.date()
+        end_q = self.train_end_date.date()
+        train_date_start = date_cls(start_q.year(), start_q.month(), start_q.day())
+        train_date_end = date_cls(end_q.year(), end_q.month(), end_q.day())
+        split_pct = self.split_slider.value()
 
         # Auto-tune settings
         use_autotune = self.autotune_check.isChecked()
@@ -1129,8 +1265,12 @@ class TrainingTab(QWidget):
             all_data = []
             for i, ticker in enumerate(tickers):
                 check_cancelled()
-                update_progress(f"Fetching {ticker}...", 10 + (i * 20 // len(tickers)))
-                data = fetcher.fetch(ticker, period=period)
+                update_progress(f"Fetching {ticker} ({train_date_start} to {train_date_end})...", 10 + (i * 20 // len(tickers)))
+                try:
+                    data = fetcher.fetch_range(ticker, start=train_date_start, end=train_date_end)
+                except Exception:
+                    # Fallback: if fetch_range fails (e.g., no data for range), skip
+                    continue
                 if data is not None and not data.empty:
                     data = indicators.add_all(data, config=feature_config)
                     data['label'] = labeler.create_labels(data)
@@ -1141,15 +1281,23 @@ class TrainingTab(QWidget):
                 return None
 
             update_progress("Preparing features...", 30)
-            combined = pd.concat(all_data, ignore_index=True).dropna()
+            combined = pd.concat(all_data).dropna()  # Keep index for temporal ordering
             exclude_cols = ['open', 'high', 'low', 'close', 'volume', 'label']
             feature_cols = [c for c in combined.columns if c not in exclude_cols]
             X = combined[feature_cols]
             y = combined['label']
 
-            # Split data for training and validation
-            from sklearn.model_selection import train_test_split
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+            # Temporal split: use chronological order, not random shuffle
+            # Sort by date index to ensure proper temporal ordering
+            combined_sorted = combined.sort_index()
+            X = combined_sorted[feature_cols]
+            y = combined_sorted['label']
+            split_idx = int(len(X) * split_pct / 100)
+            gap = labeler.forward_days  # Gap to prevent label leakage
+            X_train = X.iloc[:split_idx]
+            y_train = y.iloc[:split_idx]
+            X_test = X.iloc[split_idx + gap:]
+            y_test = y.iloc[split_idx + gap:]
 
             check_cancelled()
 
@@ -1338,6 +1486,19 @@ class TrainingTab(QWidget):
 
             model.save(model_path, metrics=model_metrics, feature_config=feature_config)
 
+            # Save training metadata for overlap detection
+            from ..training.metadata import TrainingMetadataStore, TrainingInfo
+            meta_store = TrainingMetadataStore(models_dir="models")
+            training_info = TrainingInfo(
+                train_start=train_date_start.isoformat(),
+                train_end=train_date_end.isoformat(),
+                tickers=tickers,
+                model_type=model_type,
+                model_filename=f"{model_filename}.joblib",
+                forward_days=labeler.forward_days,
+            )
+            meta_store.save(training_info)
+
             # Force cleanup before MLflow logging
             gc.collect()
 
@@ -1353,7 +1514,9 @@ class TrainingTab(QWidget):
                 params = {
                     "model_type": model_type,
                     "tickers": tickers_text,
-                    "period": period,
+                    "train_start": train_date_start.isoformat(),
+                    "train_end": train_date_end.isoformat(),
+                    "split_pct": split_pct,
                     "train_samples": len(X_train),
                     "test_samples": len(X_test),
                     "n_features": len(feature_cols),
@@ -1418,6 +1581,11 @@ class TrainingTab(QWidget):
                 'confusion_matrix': cm.tolist(),
                 'feature_names': feature_names,
                 'feature_importance': feature_importance,
+                'train_start': train_date_start.isoformat(),
+                'train_end': train_date_end.isoformat(),
+                'split_pct': split_pct,
+                'train_count': len(X_train),
+                'val_count': len(X_test),
             }
 
         self.worker = WorkerThread(train)
@@ -1446,7 +1614,11 @@ class TrainingTab(QWidget):
             return
 
         samples = result['samples']
-        self.status_label.setText(f"Training complete! {samples} samples processed")
+        train_range = f"{result.get('train_start', '?')} to {result.get('train_end', '?')}"
+        split_info = f"Train: {result.get('train_count', '?')} | Val: {result.get('val_count', '?')}"
+        self.status_label.setText(
+            f"Training complete! {samples} samples ({train_range})\n{split_info}"
+        )
 
         # Signal that training is complete so model list can refresh
         self.training_complete.emit()
@@ -1540,12 +1712,13 @@ class BacktestTab(QWidget):
         self.worker = None
         self._current_model = None  # Set by global selector
         self.setup_ui()
+        self._check_overlap()
 
     def setup_ui(self):
         layout = QHBoxLayout(self)
 
         left_panel = QWidget()
-        left_panel.setFixedWidth(300)
+        left_panel.setFixedWidth(320)
         left_layout = QVBoxLayout(left_panel)
 
         config_group = QGroupBox("BACKTEST CONFIG")
@@ -1555,11 +1728,90 @@ class BacktestTab(QWidget):
         self.ticker_input = QLineEdit("AAPL")
         config_layout.addWidget(self.ticker_input)
 
-        config_layout.addWidget(QLabel("Period"))
-        self.period_combo = QComboBox()
-        self.period_combo.addItems(["3mo", "6mo", "1y", "2y"])
-        self.period_combo.setCurrentText("1y")
-        config_layout.addWidget(self.period_combo)
+        # Date range inputs
+        config_layout.addWidget(QLabel("Backtest Date Range"))
+
+        # Preset buttons
+        preset_layout = QHBoxLayout()
+        for label, months in [("3M", 3), ("6M", 6), ("1Y", 12), ("2Y", 24)]:
+            btn = QPushButton(label)
+            btn.setFixedWidth(50)
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #21262D;
+                    padding: 4px 8px;
+                    font-size: 11px;
+                }
+                QPushButton:hover {
+                    background-color: #30363D;
+                }
+            """)
+            btn.clicked.connect(lambda checked, m=months: self._set_bt_date_preset(m))
+            preset_layout.addWidget(btn)
+        preset_layout.addStretch()
+        config_layout.addLayout(preset_layout)
+
+        from datetime import date
+        from dateutil.relativedelta import relativedelta
+
+        date_row = QHBoxLayout()
+        date_row.addWidget(QLabel("From"))
+        self.bt_start_date = QDateEdit()
+        self.bt_start_date.setCalendarPopup(True)
+        self.bt_start_date.setDisplayFormat("yyyy-MM-dd")
+        default_start = date.today() - relativedelta(years=1)
+        self.bt_start_date.setDate(QDate(default_start.year, default_start.month, default_start.day))
+        self.bt_start_date.dateChanged.connect(self._check_overlap)
+        date_row.addWidget(self.bt_start_date)
+
+        date_row.addWidget(QLabel("To"))
+        self.bt_end_date = QDateEdit()
+        self.bt_end_date.setCalendarPopup(True)
+        self.bt_end_date.setDisplayFormat("yyyy-MM-dd")
+        self.bt_end_date.setDate(QDate.currentDate())
+        self.bt_end_date.dateChanged.connect(self._check_overlap)
+        date_row.addWidget(self.bt_end_date)
+        config_layout.addLayout(date_row)
+
+        # Auto-fill button: suggest dates from training metadata
+        self.autofill_btn = QPushButton("Auto-fill from Training Data")
+        self.autofill_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #0D47A1;
+                padding: 6px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #1565C0;
+            }
+        """)
+        self.autofill_btn.setToolTip(
+            "Automatically set backtest dates to start after the training period ends, "
+            "ensuring no data overlap."
+        )
+        self.autofill_btn.clicked.connect(self._autofill_dates)
+        config_layout.addWidget(self.autofill_btn)
+
+        # Data Overlap Warning Banner
+        self.overlap_banner = QLabel("")
+        self.overlap_banner.setWordWrap(True)
+        self.overlap_banner.setStyleSheet("""
+            QLabel {
+                background-color: #3D1F00;
+                color: #FFC107;
+                padding: 8px;
+                border: 1px solid #FFC107;
+                border-radius: 4px;
+                font-size: 11px;
+            }
+        """)
+        self.overlap_banner.setVisible(False)
+        config_layout.addWidget(self.overlap_banner)
+
+        # Data integrity indicator
+        self.integrity_label = QLabel("")
+        self.integrity_label.setStyleSheet("font-size: 11px;")
+        config_layout.addWidget(self.integrity_label)
 
         config_layout.addWidget(QLabel("Initial Capital"))
         self.capital_spin = QDoubleSpinBox()
@@ -1574,6 +1826,7 @@ class BacktestTab(QWidget):
 
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: #6E7681;")
+        self.status_label.setWordWrap(True)
         config_layout.addWidget(self.status_label)
 
         left_layout.addWidget(config_group)
@@ -1642,9 +1895,86 @@ class BacktestTab(QWidget):
         layout.addWidget(left_panel)
         layout.addWidget(right_panel, 1)
 
+    def _set_bt_date_preset(self, months: int):
+        """Set backtest date range from a preset."""
+        from datetime import date
+        from dateutil.relativedelta import relativedelta
+        end = date.today()
+        start = end - relativedelta(months=months)
+        self.bt_start_date.setDate(QDate(start.year, start.month, start.day))
+        self.bt_end_date.setDate(QDate(end.year, end.month, end.day))
+
+    def _autofill_dates(self):
+        """Auto-fill backtest dates to start after training period."""
+        from ..training.metadata import TrainingMetadataStore
+
+        model_filename = self._current_model
+        meta_store = TrainingMetadataStore(models_dir="models")
+
+        # Try to get suggestion for the current model, or latest
+        suggestion = meta_store.suggest_backtest_range(
+            model_filename=f"{model_filename}.joblib" if model_filename else None
+        )
+
+        if suggestion is None:
+            # Fallback: try latest model
+            suggestion = meta_store.suggest_backtest_range()
+
+        if suggestion is None:
+            self.status_label.setText("No training metadata found. Train a model first.")
+            return
+
+        from datetime import date
+        start = date.fromisoformat(suggestion["start"])
+        end = date.fromisoformat(suggestion["end"])
+        self.bt_start_date.setDate(QDate(start.year, start.month, start.day))
+        self.bt_end_date.setDate(QDate(end.year, end.month, end.day))
+        self.status_label.setText(f"Dates auto-filled: {start} to {end}")
+
+    def _check_overlap(self):
+        """Check if backtest dates overlap with training data and update warning."""
+        try:
+            from ..training.metadata import TrainingMetadataStore
+            from datetime import date
+
+            start_q = self.bt_start_date.date()
+            end_q = self.bt_end_date.date()
+            bt_start = date(start_q.year(), start_q.month(), start_q.day())
+            bt_end = date(end_q.year(), end_q.month(), end_q.day())
+
+            meta_store = TrainingMetadataStore(models_dir="models")
+
+            model_filename = self._current_model
+            result = meta_store.check_overlap(
+                bt_start, bt_end,
+                model_filename=f"{model_filename}.joblib" if model_filename else None
+            )
+
+            if result["overlaps"]:
+                self.overlap_banner.setText(
+                    f"DATA OVERLAP WARNING\n{result['message']}"
+                )
+                self.overlap_banner.setVisible(True)
+                self.integrity_label.setText("Data Integrity: OVERLAP DETECTED")
+                self.integrity_label.setStyleSheet("color: #FF6B6B; font-size: 11px; font-weight: bold;")
+            else:
+                self.overlap_banner.setVisible(False)
+                info = meta_store.get_latest()
+                if info:
+                    self.integrity_label.setText("Data Integrity: CLEAN (no overlap)")
+                    self.integrity_label.setStyleSheet("color: #00D4AA; font-size: 11px; font-weight: bold;")
+                else:
+                    self.integrity_label.setText("Data Integrity: Unknown (no training metadata)")
+                    self.integrity_label.setStyleSheet("color: #8B949E; font-size: 11px;")
+        except Exception:
+            # Don't crash the UI if metadata check fails
+            self.overlap_banner.setVisible(False)
+            self.integrity_label.setText("")
+
     def set_model(self, model_name: str):
         """Set the active model (called from global selector)."""
         self._current_model = model_name if model_name else None
+        self._check_overlap()
 
     def on_run(self):
         ticker = self.ticker_input.text().strip().upper()
@@ -1655,8 +1985,14 @@ class BacktestTab(QWidget):
         self.run_btn.setEnabled(False)
 
         model_name = self._current_model
-        period = self.period_combo.currentText()
         capital = self.capital_spin.value()
+
+        # Capture date range
+        from datetime import date as date_cls
+        start_q = self.bt_start_date.date()
+        end_q = self.bt_end_date.date()
+        bt_start = date_cls(start_q.year(), start_q.month(), start_q.day())
+        bt_end = date_cls(end_q.year(), end_q.month(), end_q.day())
 
         def backtest(progress_callback=None):
             from ..data.fetcher import StockDataFetcher
@@ -1666,11 +2002,11 @@ class BacktestTab(QWidget):
             import pandas as pd
 
             if progress_callback:
-                progress_callback("Fetching data...", 20)
+                progress_callback(f"Fetching {ticker} ({bt_start} to {bt_end})...", 20)
 
             fetcher = StockDataFetcher()
             indicators = TechnicalIndicators()
-            data = fetcher.fetch(ticker, period=period)
+            data = fetcher.fetch_range(ticker, start=bt_start, end=bt_end)
 
             if data is None or data.empty:
                 return None

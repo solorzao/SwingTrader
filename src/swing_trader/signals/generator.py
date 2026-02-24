@@ -48,10 +48,18 @@ class SignalGenerator:
     def generate(
         self,
         ticker: str,
-        period: str = "6mo"
+        period: str = "6mo",
+        start: str | None = None,
+        end: str | None = None,
     ) -> pd.DataFrame:
         """
         Generate signals for a single ticker.
+
+        Args:
+            ticker: Stock symbol
+            period: Data period (used if start/end not provided)
+            start: Start date as YYYY-MM-DD (overrides period)
+            end: End date as YYYY-MM-DD (overrides period)
 
         Returns DataFrame with columns:
             - date, open, high, low, close, volume
@@ -60,8 +68,11 @@ class SignalGenerator:
             - confidence: Signal confidence (0-1)
             - model_signals: Individual model predictions
         """
-        # Fetch data
-        df = self.fetcher.fetch(ticker, period=period)
+        # Fetch data using date range if provided, otherwise period
+        if start and end:
+            df = self.fetcher.fetch_range(ticker, start=start, end=end)
+        else:
+            df = self.fetcher.fetch(ticker, period=period)
 
         # Add indicators
         df = self.indicators.add_all(df, dropna=True)

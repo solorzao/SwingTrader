@@ -16,7 +16,9 @@ def main():
     train_parser.add_argument("--tickers", nargs="+", required=True, help="Tickers to train on")
     train_parser.add_argument("--model", choices=["rf", "xgb", "lstm", "all"], default="all")
     train_parser.add_argument("--output", type=Path, default=Path("data/models"))
-    train_parser.add_argument("--period", default="2y", help="Training data period")
+    train_parser.add_argument("--period", default="2y", help="Training data period (ignored if --start/--end given)")
+    train_parser.add_argument("--start", help="Training start date (YYYY-MM-DD)")
+    train_parser.add_argument("--end", help="Training end date (YYYY-MM-DD)")
 
     # Tune command
     tune_parser = subparsers.add_parser("tune", help="Tune hyperparameters")
@@ -43,8 +45,11 @@ def main():
     bt_parser = subparsers.add_parser("backtest", help="Backtest strategy")
     bt_parser.add_argument("ticker", help="Stock ticker")
     bt_parser.add_argument("--models", type=Path, default=Path("data/models"))
-    bt_parser.add_argument("--period", default="1y")
+    bt_parser.add_argument("--period", default="1y", help="Backtest period (ignored if --start/--end given)")
+    bt_parser.add_argument("--start", help="Backtest start date (YYYY-MM-DD)")
+    bt_parser.add_argument("--end", help="Backtest end date (YYYY-MM-DD)")
     bt_parser.add_argument("--capital", type=float, default=10000)
+    bt_parser.add_argument("--check-overlap", action="store_true", help="Check for training data overlap")
 
     # UI command
     ui_parser = subparsers.add_parser("ui", help="Launch desktop application")
@@ -72,16 +77,28 @@ def run_train(args):
     from swing_trader.data import StockDataFetcher
     from swing_trader.features import TechnicalIndicators, SignalLabeler
     from swing_trader.models import RandomForestModel, XGBoostModel, LSTMModel
+    from swing_trader.training.metadata import TrainingMetadataStore, TrainingInfo
 
-    print(f"Fetching data for {len(args.tickers)} tickers...")
     fetcher = StockDataFetcher()
     indicators = TechnicalIndicators()
     labeler = SignalLabeler()
 
+    # Determine date range
+    if args.start and args.end:
+        print(f"Fetching data for {len(args.tickers)} tickers ({args.start} to {args.end})...")
+        fetch_method = lambda ticker: fetcher.fetch_range(ticker, start=args.start, end=args.end)
+        train_start = args.start
+        train_end = args.end
+    else:
+        print(f"Fetching data for {len(args.tickers)} tickers (period: {args.period})...")
+        fetch_method = lambda ticker: fetcher.fetch(ticker, period=args.period)
+        train_start = None
+        train_end = None
+
     all_data = []
     for ticker in args.tickers:
         try:
-            df = fetcher.fetch(ticker, period=args.period)
+            df = fetch_method(ticker)
             df = indicators.add_all(df)
             df["target"] = labeler.create_labels(df)
             df = df.dropna()
@@ -94,17 +111,30 @@ def run_train(args):
         print("No data collected. Exiting.")
         return
 
-    combined = pd.concat(all_data, ignore_index=True)
+    combined = pd.concat(all_data)
+    combined = combined.sort_index()  # Ensure temporal order
     print(f"\nTotal training samples: {len(combined)}")
+
+    # Derive actual date range from data
+    if train_start is None:
+        train_start = str(combined.index.min().date()) if hasattr(combined.index.min(), 'date') else str(combined.index.min())
+    if train_end is None:
+        train_end = str(combined.index.max().date()) if hasattr(combined.index.max(), 'date') else str(combined.index.max())
+
+    print(f"Date range: {train_start} to {train_end}")
 
     exclude_cols = ["target", "open", "high", "low", "close", "volume"]
     feature_cols = [c for c in combined.columns if c not in exclude_cols]
     X = combined[feature_cols]
     y = combined["target"]
 
+    # Temporal split with gap for label leakage prevention
     split_idx = int(len(X) * 0.8)
-    X_train, X_val = X[:split_idx], X[split_idx:]
-    y_train, y_val = y[:split_idx], y[split_idx:]
+    gap = labeler.forward_days
+    X_train, X_val = X[:split_idx], X[split_idx + gap:]
+    y_train, y_val = y[:split_idx], y[split_idx + gap:]
+
+    print(f"Train: {len(X_train)} samples | Gap: {gap} days | Validation: {len(X_val)} samples")
 
     args.output.mkdir(parents=True, exist_ok=True)
 
@@ -127,6 +157,18 @@ def run_train(args):
         model_path = args.output / f"{name}_model.joblib"
         model.save(model_path)
         print(f"  Saved to {model_path}")
+
+        # Save training metadata
+        meta_store = TrainingMetadataStore(models_dir=str(args.output))
+        meta_info = TrainingInfo(
+            train_start=train_start,
+            train_end=train_end,
+            tickers=args.tickers,
+            model_type=name,
+            model_filename=f"{name}_model.joblib",
+            forward_days=labeler.forward_days,
+        )
+        meta_store.save(meta_info)
 
     print("\nTraining complete!")
 
@@ -256,8 +298,30 @@ def run_backtest(args):
         print("No models found. Run 'swing-trader train' first.")
         return
 
-    print(f"Backtesting {args.ticker}...")
-    df = generator.generate(args.ticker, period=args.period)
+    # Check for data overlap if requested
+    if args.check_overlap:
+        from swing_trader.training.metadata import TrainingMetadataStore
+        meta_store = TrainingMetadataStore(models_dir=str(args.models))
+        info = meta_store.get_latest()
+        if info:
+            print(f"Training data: {info.train_start} to {info.train_end}")
+            print(f"Safe backtest start: {info.safe_backtest_start.isoformat()}")
+
+            if args.start:
+                result = meta_store.check_overlap(args.start, args.end or "2099-12-31")
+                if result["overlaps"]:
+                    print(f"\nWARNING: {result['message']}")
+                else:
+                    print(f"OK: {result['message']}")
+            print()
+
+    # Use date range if provided, otherwise fall back to period
+    if args.start and args.end:
+        print(f"Backtesting {args.ticker} ({args.start} to {args.end})...")
+        df = generator.generate(args.ticker, start=args.start, end=args.end)
+    else:
+        print(f"Backtesting {args.ticker} (period: {args.period})...")
+        df = generator.generate(args.ticker, period=args.period)
 
     engine = BacktestEngine(initial_capital=args.capital)
     result = engine.run(df)

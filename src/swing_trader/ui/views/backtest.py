@@ -16,6 +16,7 @@ class BacktestView:
         self.indicators = TechnicalIndicators()
         self.engine = BacktestEngine()
         self._is_running = False
+        self._overlap_info = None
         self._setup()
 
     def _setup(self):
@@ -62,7 +63,13 @@ class BacktestView:
                 width=-1
             )
 
-            dpg.add_spacer(height=20)
+            dpg.add_spacer(height=15)
+
+            # Data overlap warning
+            dpg.add_text("", tag="bt_overlap_warning", color=COLORS["warning"], wrap=260)
+            self._check_training_overlap()
+
+            dpg.add_spacer(height=10)
             dpg.add_button(
                 label="Run Backtest",
                 tag="bt_run_btn",
@@ -126,6 +133,24 @@ class BacktestView:
             dpg.add_text(title.upper(), color=COLORS["text_secondary"])
             dpg.add_spacer(height=5)
             dpg.add_text(default, tag=tag, color=COLORS["text_muted"])
+
+    def _check_training_overlap(self):
+        """Check if backtest period overlaps with training data."""
+        try:
+            from ...training.metadata import TrainingMetadataStore
+            meta_store = TrainingMetadataStore(models_dir="models")
+            info = meta_store.get_latest()
+            if info:
+                period = dpg.get_value("bt_period") if dpg.does_item_exist("bt_period") else "1y"
+                dpg.set_value("bt_overlap_warning",
+                    f"Training data: {info.train_start} to {info.train_end}\n"
+                    f"Safe backtest start: {info.safe_backtest_start.isoformat()}"
+                )
+                self._overlap_info = info
+            else:
+                dpg.set_value("bt_overlap_warning", "")
+        except Exception:
+            dpg.set_value("bt_overlap_warning", "")
 
     def _on_run(self, sender=None, data=None):
         """Handle backtest run."""
