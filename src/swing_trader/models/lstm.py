@@ -82,14 +82,26 @@ class LSTMModel(BaseModel):
         X: pd.DataFrame,
         y: pd.Series,
         verbose: bool = False,
+        scaler_X: pd.DataFrame | None = None,
         **kwargs
     ) -> "LSTMModel":
-        """Train the LSTM model."""
+        """Train the LSTM model.
+
+        Args:
+            scaler_X: If provided, fit scaler on this data (should be train-only)
+                to prevent data leakage. If None, fits scaler on X.
+        """
         X_prep = self._prepare_features(X)
 
+        # Fit scaler on scaler_X (train-only) to prevent data leakage
+        if scaler_X is not None:
+            scaler_data = scaler_X[self.feature_columns].values.astype(np.float32)
+        else:
+            scaler_data = X_prep.values.astype(np.float32)
+        self.scaler_mean = scaler_data.mean(axis=0)
+        self.scaler_std = scaler_data.std(axis=0) + 1e-8
+
         X_values = X_prep.values.astype(np.float32)
-        self.scaler_mean = X_values.mean(axis=0)
-        self.scaler_std = X_values.std(axis=0) + 1e-8
         X_scaled = (X_values - self.scaler_mean) / self.scaler_std
 
         y_mapped = y.map(self._label_map).values
@@ -130,6 +142,12 @@ class LSTMModel(BaseModel):
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
         """Predict signals."""
+        if self.scaler_mean is None or self.scaler_std is None:
+            raise ValueError(
+                "LSTM model missing scaler parameters. This model was saved with an older format. "
+                "Please retrain the LSTM model to use it for predictions/backtesting."
+            )
+
         X_prep = X[self.feature_columns].values.astype(np.float32)
         X_scaled = (X_prep - self.scaler_mean) / self.scaler_std
         X_seq = self._create_sequences(X_scaled)
@@ -157,3 +175,83 @@ class LSTMModel(BaseModel):
             proba = torch.softmax(outputs, dim=1)
 
         return proba.cpu().numpy()
+
+    def save(self, path, metrics: dict = None, feature_config: dict = None) -> None:
+        """Save LSTM model with all necessary attributes."""
+        from pathlib import Path
+        import joblib
+
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if metrics:
+            self.metrics = metrics
+        if feature_config:
+            self.feature_config = feature_config
+
+        # Save model state dict separately (CPU for portability)
+        model_state = self.model.state_dict() if self.model else None
+
+        joblib.dump({
+            "model_state": model_state,
+            "feature_columns": self.feature_columns,
+            "name": self.name,
+            "metrics": self.metrics,
+            "feature_config": self.feature_config,
+            # LSTM-specific attributes
+            "sequence_length": self.sequence_length,
+            "hidden_size": self.hidden_size,
+            "num_layers": self.num_layers,
+            "dropout": self.dropout,
+            "scaler_mean": self.scaler_mean,
+            "scaler_std": self.scaler_std,
+            "input_size": len(self.feature_columns) if self.feature_columns else None,
+        }, path)
+
+    def load(self, path) -> "LSTMModel":
+        """Load LSTM model with all necessary attributes."""
+        from pathlib import Path
+        import joblib
+
+        data = joblib.load(path)
+
+        self.feature_columns = data["feature_columns"]
+        self.name = data["name"]
+        self.metrics = data.get("metrics", {})
+        self.feature_config = data.get("feature_config", None)
+
+        # LSTM-specific attributes (with defaults for old models)
+        self.sequence_length = data.get("sequence_length", 20)
+        self.hidden_size = data.get("hidden_size", 64)
+        self.num_layers = data.get("num_layers", 2)
+        self.dropout = data.get("dropout", 0.2)
+        self.scaler_mean = data.get("scaler_mean")
+        self.scaler_std = data.get("scaler_std")
+
+        # Handle both new format (model_state) and old format (model)
+        model_state = data.get("model_state")
+        old_model = data.get("model")
+        input_size = data.get("input_size") or len(self.feature_columns)
+
+        if model_state is not None:
+            # New format: recreate network and load state dict
+            self.model = LSTMNetwork(
+                input_size=input_size,
+                hidden_size=self.hidden_size,
+                num_layers=self.num_layers,
+                dropout=self.dropout
+            ).to(self.device)
+            self.model.load_state_dict(model_state)
+            self.model.eval()
+        elif old_model is not None:
+            # Old format: model was saved directly (may not work across devices)
+            self.model = old_model
+            if hasattr(self.model, 'eval'):
+                self.model.eval()
+            # Try to move to current device
+            try:
+                self.model = self.model.to(self.device)
+            except:
+                pass  # May fail if model structure changed
+
+        self.is_fitted = True
+        return self

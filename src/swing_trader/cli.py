@@ -45,6 +45,16 @@ def main():
     bt_parser.add_argument("--models", type=Path, default=Path("data/models"))
     bt_parser.add_argument("--period", default="1y")
     bt_parser.add_argument("--capital", type=float, default=10000)
+    bt_parser.add_argument("--walk-forward", action="store_true", help="Use walk-forward backtesting")
+    bt_parser.add_argument("--wf-mode", choices=["expanding", "rolling"], default="expanding")
+    bt_parser.add_argument("--wf-window", type=int, default=252, help="Training window days")
+    bt_parser.add_argument("--wf-step", type=int, default=21, help="Step size in days")
+
+    # Evaluate command
+    eval_parser = subparsers.add_parser("evaluate", help="Evaluate model with train/test comparison")
+    eval_parser.add_argument("--tickers", nargs="+", required=True)
+    eval_parser.add_argument("--model", choices=["rf", "xgb", "lstm"], default="rf")
+    eval_parser.add_argument("--period", default="2y")
 
     # UI command
     ui_parser = subparsers.add_parser("ui", help="Launch desktop application")
@@ -61,6 +71,8 @@ def main():
         run_scan(args)
     elif args.command == "backtest":
         run_backtest(args)
+    elif args.command == "evaluate":
+        run_evaluate(args)
     elif args.command == "ui":
         run_ui(args)
     else:
@@ -68,43 +80,20 @@ def main():
 
 
 def run_train(args):
-    """Train models on specified tickers."""
-    from swing_trader.data import StockDataFetcher
-    from swing_trader.features import TechnicalIndicators, SignalLabeler
+    """Train models on specified tickers using DataPipeline."""
+    from swing_trader.data.pipeline import DataPipeline
     from swing_trader.models import RandomForestModel, XGBoostModel, LSTMModel
+    from swing_trader.evaluation.evaluator import ModelEvaluator
 
-    print(f"Fetching data for {len(args.tickers)} tickers...")
-    fetcher = StockDataFetcher()
-    indicators = TechnicalIndicators()
-    labeler = SignalLabeler()
+    pipeline = DataPipeline()
+    evaluator = ModelEvaluator()
 
-    all_data = []
-    for ticker in args.tickers:
-        try:
-            df = fetcher.fetch(ticker, period=args.period)
-            df = indicators.add_all(df)
-            df["target"] = labeler.create_labels(df)
-            df = df.dropna()
-            all_data.append(df)
-            print(f"  {ticker}: {len(df)} samples")
-        except Exception as e:
-            print(f"  {ticker}: FAILED - {e}")
-
-    if not all_data:
-        print("No data collected. Exiting.")
-        return
-
-    combined = pd.concat(all_data, ignore_index=True)
-    print(f"\nTotal training samples: {len(combined)}")
-
-    exclude_cols = ["target", "open", "high", "low", "close", "volume"]
-    feature_cols = [c for c in combined.columns if c not in exclude_cols]
-    X = combined[feature_cols]
-    y = combined["target"]
-
-    split_idx = int(len(X) * 0.8)
-    X_train, X_val = X[:split_idx], X[split_idx:]
-    y_train, y_val = y[:split_idx], y[split_idx:]
+    print(f"Fetching and preparing data for {len(args.tickers)} tickers...")
+    split = pipeline.prepare_and_split(args.tickers, period=args.period)
+    print(f"  Train: {split.train_size}  Val: {split.val_size}  "
+          f"Test: {split.test_size}  Holdout: {split.holdout_size}")
+    print(f"  Train ends: {split.train_end_date.date()}  "
+          f"Test ends: {split.test_end_date.date()}")
 
     args.output.mkdir(parents=True, exist_ok=True)
 
@@ -116,48 +105,44 @@ def run_train(args):
     if args.model in ["lstm", "all"]:
         models_to_train.append(("lstm", LSTMModel(epochs=30)))
 
+    feature_config = pipeline.feature_config.to_indicator_config()
+
     for name, model in models_to_train:
         print(f"\nTraining {name}...")
-        model.fit(X_train, y_train)
+        if name == "lstm":
+            model.fit(split.X_train, split.y_train, scaler_X=split.X_train)
+        else:
+            model.fit(split.X_train, split.y_train)
 
-        preds = model.predict(X_val)
-        accuracy = (preds == y_val.values[-len(preds):]).mean()
-        print(f"  Validation accuracy: {accuracy:.2%}")
+        # Evaluate with train/test comparison
+        report = evaluator.evaluate(model, split)
+        print(report.summary())
 
+        # Save with metadata
+        metrics = {
+            "accuracy": report.test_metrics.accuracy,
+            "f1_macro": report.test_metrics.f1_macro,
+            "training_end_date": split.train_end_date.isoformat(),
+            "test_end_date": split.test_end_date.isoformat(),
+        }
         model_path = args.output / f"{name}_model.joblib"
-        model.save(model_path)
+        model.save(model_path, metrics=metrics, feature_config=feature_config)
         print(f"  Saved to {model_path}")
 
     print("\nTraining complete!")
 
 
 def run_tune(args):
-    """Tune model hyperparameters."""
-    from swing_trader.data import StockDataFetcher
-    from swing_trader.features import TechnicalIndicators, SignalLabeler
+    """Tune model hyperparameters using DataPipeline."""
+    from swing_trader.data.pipeline import DataPipeline
     from swing_trader.training import HyperparameterTuner, ExperimentTracker
 
-    print(f"Fetching data for {len(args.tickers)} tickers...")
-    fetcher = StockDataFetcher()
-    indicators = TechnicalIndicators()
-    labeler = SignalLabeler()
+    pipeline = DataPipeline()
 
-    all_data = []
-    for ticker in args.tickers:
-        try:
-            df = fetcher.fetch(ticker, period="2y")
-            df = indicators.add_all(df)
-            df["target"] = labeler.create_labels(df)
-            df = df.dropna()
-            all_data.append(df)
-        except Exception as e:
-            print(f"  {ticker}: FAILED - {e}")
-
-    combined = pd.concat(all_data, ignore_index=True)
-    exclude_cols = ["target", "open", "high", "low", "close", "volume"]
-    feature_cols = [c for c in combined.columns if c not in exclude_cols]
-    X = combined[feature_cols]
-    y = combined["target"]
+    print(f"Fetching and preparing data for {len(args.tickers)} tickers...")
+    combined = pipeline.prepare_multiple(args.tickers)
+    X, y = pipeline.get_features_and_target(combined)
+    print(f"Total samples: {len(X)}")
 
     tracker = ExperimentTracker()
     tuner = HyperparameterTuner(tracker=tracker)
@@ -256,8 +241,36 @@ def run_backtest(args):
         print("No models found. Run 'swing-trader train' first.")
         return
 
+    if args.walk_forward:
+        _run_walk_forward_backtest(args, generator)
+    else:
+        _run_static_backtest(args, generator)
+
+
+def _run_static_backtest(args, generator):
+    """Standard backtest with date enforcement."""
+    from swing_trader.backtest import BacktestEngine
+
     print(f"Backtesting {args.ticker}...")
     df = generator.generate(args.ticker, period=args.period)
+
+    # Enforce post-training date filtering
+    for model in generator.models.values():
+        if hasattr(model, 'metrics') and model.metrics:
+            test_end_str = model.metrics.get('test_end_date')
+            if test_end_str:
+                try:
+                    test_end = pd.Timestamp(test_end_str)
+                    pre_len = len(df)
+                    df = df[df.index > test_end]
+                    print(f"  Filtered to post-training data: {pre_len} -> {len(df)} rows")
+                except Exception:
+                    pass
+            break
+
+    if len(df) < 5:
+        print("Not enough post-training data for backtesting.")
+        return
 
     engine = BacktestEngine(initial_capital=args.capital)
     result = engine.run(df)
@@ -267,6 +280,74 @@ def run_backtest(args):
     if len(result.trades) > 0:
         print("\nRecent trades:")
         print(result.trades.tail(10).to_string())
+
+
+def _run_walk_forward_backtest(args, generator):
+    """Walk-forward backtest with periodic retraining."""
+    from swing_trader.data.pipeline import DataPipeline
+    from swing_trader.backtest.walk_forward import WalkForwardEngine
+    from swing_trader.config import WalkForwardConfig, BacktestConfig
+    from swing_trader.models import RandomForestModel
+
+    print(f"Walk-forward backtesting {args.ticker}...")
+    pipeline = DataPipeline()
+    df = pipeline.prepare(args.ticker, period=args.period)
+    X, y = pipeline.get_features_and_target(df)
+
+    wf_config = WalkForwardConfig(
+        mode=args.wf_mode,
+        train_window_days=args.wf_window,
+        step_days=args.wf_step,
+    )
+    bt_config = BacktestConfig(initial_capital=args.capital)
+
+    def model_factory(X_train, y_train):
+        model = RandomForestModel(n_estimators=100)
+        model.fit(X_train, y_train)
+        return model
+
+    engine = WalkForwardEngine(wf_config=wf_config, bt_config=bt_config)
+    result = engine.run(X, y, df["close"], model_factory)
+
+    print(f"\nWalk-Forward Results ({result.n_windows} windows, {wf_config.mode} mode)")
+    print(f"Mean OOS accuracy: {result.mean_oos_accuracy:.2%}")
+    print(result.backtest_result.summary())
+
+    # Per-window accuracy breakdown
+    print("\nPer-window accuracy:")
+    for w in result.window_results:
+        print(f"  Window {w.window_idx}: {w.accuracy:.2%} "
+              f"({w.test_start.date()} to {w.test_end.date()}, "
+              f"train={w.train_size}, test={w.test_size})")
+
+
+def run_evaluate(args):
+    """Evaluate model with train/test comparison and bootstrap CIs."""
+    from swing_trader.data.pipeline import DataPipeline
+    from swing_trader.models import RandomForestModel, XGBoostModel, LSTMModel
+    from swing_trader.evaluation.evaluator import ModelEvaluator
+    from swing_trader.backtest import BacktestEngine
+
+    pipeline = DataPipeline()
+    evaluator = ModelEvaluator()
+
+    print(f"Preparing data for {len(args.tickers)} tickers...")
+    split = pipeline.prepare_and_split(args.tickers, period=args.period)
+
+    model_map = {"rf": RandomForestModel, "xgb": XGBoostModel, "lstm": LSTMModel}
+    model = model_map[args.model]()
+
+    print(f"Training {args.model}...")
+    if args.model == "lstm":
+        model.fit(split.X_train, split.y_train, scaler_X=split.X_train)
+    else:
+        model.fit(split.X_train, split.y_train)
+
+    report = evaluator.evaluate(model, split)
+    print(report.summary())
+
+    print(f"\nClass distribution (train): {report.class_distribution_train}")
+    print(f"Class distribution (test):  {report.class_distribution_test}")
 
 
 def run_ui(args):

@@ -73,14 +73,12 @@ class HyperparameterTuner:
         GPU is problematic for repeated model creation in Optuna loops.
         The final model trained after tuning will use GPU if available.
         """
-        from sklearn.model_selection import train_test_split
-
         y_mapped = y.map({-1: 0, 0: 1, 1: 2})
 
-        # Always use train/val split for early stopping (prevents hanging)
-        X_train, X_val, y_train, y_val = train_test_split(
-            X, y_mapped, test_size=0.2, random_state=42
-        )
+        # Chronological split for early stopping (prevents data leakage)
+        split_idx = int(len(X) * 0.8)
+        X_train, X_val = X.iloc[:split_idx], X.iloc[split_idx:]
+        y_train, y_val = y_mapped.iloc[:split_idx], y_mapped.iloc[split_idx:]
 
         def objective(trial):
             # Tune early_stopping_rounds as a hyperparameter (also prevents hanging)
