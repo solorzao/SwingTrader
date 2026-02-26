@@ -39,6 +39,28 @@ class FeatureConfig:
             }
         }
 
+    @classmethod
+    def from_indicator_config(cls, config: dict) -> "FeatureConfig":
+        """Create from the dict format returned by to_indicator_config() or UI."""
+        features = config.get("features", {})
+        params = config.get("params", {})
+        return cls(
+            sma=features.get("sma", True),
+            ema=features.get("ema", True),
+            rsi=features.get("rsi", True),
+            macd=features.get("macd", True),
+            bollinger=features.get("bollinger", True),
+            atr=features.get("atr", True),
+            obv=features.get("obv", True),
+            stochastic=features.get("stochastic", True),
+            rsi_period=params.get("rsi_period", 14),
+            sma_periods=params.get("sma_periods", [10, 20, 50]),
+            ema_periods=params.get("ema_periods", [12, 26]),
+            atr_period=params.get("atr_period", 14),
+            bb_period=params.get("bb_period", 20),
+            stoch_period=params.get("stoch_period", 14),
+        )
+
 
 @dataclass
 class LabelConfig:

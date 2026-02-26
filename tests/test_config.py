@@ -38,6 +38,29 @@ class TestFeatureConfig:
         result["params"]["sma_periods"].append(999)
         assert 999 not in cfg.sma_periods
 
+    def test_from_indicator_config_roundtrip(self):
+        original = FeatureConfig(sma_periods=[5, 15], rsi_period=21, sma=False, obv=False)
+        config_dict = original.to_indicator_config()
+        restored = FeatureConfig.from_indicator_config(config_dict)
+        assert restored.sma_periods == [5, 15]
+        assert restored.rsi_period == 21
+        assert restored.sma is False
+        assert restored.obv is False
+        assert restored.ema is True  # default preserved
+
+    def test_from_indicator_config_partial_dict(self):
+        # UI may not include all params
+        config_dict = {
+            "features": {"sma": True, "rsi": False},
+            "params": {"rsi_period": 10}
+        }
+        cfg = FeatureConfig.from_indicator_config(config_dict)
+        assert cfg.sma is True
+        assert cfg.rsi is False
+        assert cfg.rsi_period == 10
+        assert cfg.ema is True  # defaults for missing keys
+        assert cfg.sma_periods == [10, 20, 50]  # default
+
 
 class TestSplitConfig:
     def test_default_ratios_sum_to_one(self):

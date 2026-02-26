@@ -2,9 +2,8 @@ import dearpygui.dearpygui as dpg
 import threading
 import time
 from ..theme import COLORS
-from ...data.fetcher import StockDataFetcher
-from ...features.indicators import TechnicalIndicators
-from ...features.labeler import SignalLabeler
+from ...data.pipeline import DataPipeline
+from ...evaluation.evaluator import ModelEvaluator
 from ...training.tracker import ExperimentTracker
 from ...training.tuner import HyperparameterTuner
 
@@ -38,9 +37,6 @@ class TrainingView:
 
     def __init__(self, parent: str | int):
         self.parent = parent
-        self.fetcher = StockDataFetcher()
-        self.indicators = TechnicalIndicators()
-        self.labeler = SignalLabeler()
         self.tracker = ExperimentTracker()
         self._is_training = False
         self._gpu_info = detect_gpu()
@@ -212,35 +208,21 @@ class TrainingView:
                     dpg.set_value("train_status", "No tickers specified")
                     return
 
-                # Fetch and prepare data
+                # Fetch and prepare data using DataPipeline (temporal splits)
                 dpg.set_value("train_status", f"Fetching data for {len(tickers)} tickers...")
-                all_data = []
-                for i, ticker in enumerate(tickers):
-                    dpg.set_value("train_progress", (i / len(tickers)) * 0.3)
-                    data = self.fetcher.fetch(ticker, period=period)
-                    if data is not None and not data.empty:
-                        data = self.indicators.add_all(data)
-                        data = self.labeler.create_labels(data)
-                        data['ticker'] = ticker
-                        all_data.append(data)
+                pipeline = DataPipeline()
 
-                if not all_data:
-                    dpg.set_value("train_status", "No data fetched")
+                try:
+                    split = pipeline.prepare_and_split(tickers, period=period)
+                except Exception as e:
+                    dpg.set_value("train_status", f"Data error: {str(e)[:60]}")
                     return
 
-                import pandas as pd
-                combined = pd.concat(all_data, ignore_index=True)
-                combined = combined.dropna()
+                dpg.set_value("train_progress", 0.3)
+                feature_config = pipeline.feature_config.to_indicator_config()
+                dpg.set_value("train_samples", f"{split.train_size} train / {split.test_size} test")
 
-                dpg.set_value("train_samples", str(len(combined)))
-
-                # Prepare features and labels
-                feature_cols = [c for c in combined.columns if c not in
-                               ['Open', 'High', 'Low', 'Close', 'Volume', 'Adj Close', 'ticker', 'label', 'forward_return']]
-                X = combined[feature_cols].values
-                y = combined['label'].values
-
-                dpg.set_value("train_status", f"Training with {len(X)} samples...")
+                dpg.set_value("train_status", f"Training on {split.train_size} samples...")
                 dpg.set_value("train_progress", 0.4)
 
                 # Train based on model type
@@ -250,6 +232,7 @@ class TrainingView:
                 else:
                     models_to_train = [model_type]
 
+                evaluator = ModelEvaluator()
                 accuracies = []
                 loss_data = []
                 acc_data = []
@@ -270,44 +253,61 @@ class TrainingView:
                         if model_name == "Random Forest":
                             from ...models.random_forest import RandomForestModel
                             model = RandomForestModel(n_estimators=100)
-                            model.fit(X, y)
-                            accuracy = self._evaluate_model(model, X, y)
+                            model.fit(split.X_train, split.y_train)
 
                         elif model_name == "XGBoost (GPU)":
                             from ...models.xgboost_model import XGBoostModel
                             model = XGBoostModel(n_estimators=100, use_gpu=True)
-                            model.fit(X, y)
-                            accuracy = self._evaluate_model(model, X, y)
+                            model.fit(split.X_train, split.y_train)
 
                         elif model_name == "LSTM (CUDA)":
                             from ...models.lstm import LSTMModel
-                            model = LSTMModel(hidden_size=64, num_layers=2)
-                            # LSTM needs sequence data
-                            model.fit(X, y, epochs=50)
-                            accuracy = self._evaluate_model(model, X, y)
+                            model = LSTMModel(hidden_size=64, num_layers=2, epochs=50)
+                            model.fit(split.X_train, split.y_train, scaler_X=split.X_train)
+
+                        # Evaluate with proper train/test comparison
+                        report = evaluator.evaluate(model, split)
+                        accuracy = report.test_metrics.accuracy
 
                         accuracies.append(accuracy)
                         loss_data.append(1 - accuracy)
                         acc_data.append(accuracy)
 
                         # Log to MLflow
-                        self.tracker.log_metrics({"accuracy": accuracy})
+                        self.tracker.log_metrics({
+                            "accuracy": accuracy,
+                            "f1_macro": report.test_metrics.f1_macro,
+                            "train_accuracy": report.train_metrics.accuracy,
+                            "overfit_score": report.overfit_score,
+                        })
                         self.tracker.log_params({
                             "tickers": ",".join(tickers),
                             "period": period,
-                            "samples": len(X)
+                            "train_samples": split.train_size,
+                            "test_samples": split.test_size,
                         })
 
-                        # Save model
+                        # Save model with metrics and feature config
                         from pathlib import Path
-                        import joblib
                         models_dir = Path("models")
                         models_dir.mkdir(exist_ok=True)
 
                         model_filename = model_name.lower().replace(" ", "_").replace("(", "").replace(")", "").replace("_gpu", "").replace("_cuda", "")
-                        model.save(models_dir / f"{model_filename}.joblib")
+                        model_metrics = {
+                            "accuracy": report.test_metrics.accuracy,
+                            "f1_macro": report.test_metrics.f1_macro,
+                            "training_end_date": split.train_end_date.isoformat(),
+                            "test_end_date": split.test_end_date.isoformat(),
+                        }
+                        model.save(models_dir / f"{model_filename}.joblib",
+                                   metrics=model_metrics, feature_config=feature_config)
 
                         dpg.set_value("train_progress", progress_base + 0.15)
+
+                        # Show overfit warning if detected
+                        if report.is_overfit:
+                            dpg.set_value("train_status",
+                                f"{model_name}: OVERFIT (train F1: {report.train_metrics.f1_macro:.0%} vs test: {report.test_metrics.f1_macro:.0%})")
 
                     finally:
                         self.tracker.end_run()
@@ -331,14 +331,6 @@ class TrainingView:
 
         thread = threading.Thread(target=run_training, daemon=True)
         thread.start()
-
-    def _evaluate_model(self, model, X, y):
-        """Evaluate model accuracy."""
-        from sklearn.model_selection import train_test_split
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-        predictions = model.predict(X_test)
-        accuracy = (predictions == y_test).mean()
-        return accuracy
 
     def _update_training_charts(self, loss_data, acc_data, model_names):
         """Update the training charts."""
@@ -398,29 +390,18 @@ class TrainingView:
                     dpg.set_value("train_status", "No tickers specified")
                     return
 
-                # Fetch data
+                # Fetch data using DataPipeline
                 dpg.set_value("train_status", "Fetching data for tuning...")
-                all_data = []
-                for ticker in tickers:
-                    data = self.fetcher.fetch(ticker, period=period)
-                    if data is not None and not data.empty:
-                        data = self.indicators.add_all(data)
-                        data = self.labeler.create_labels(data)
-                        all_data.append(data)
+                pipeline = DataPipeline()
 
-                if not all_data:
-                    dpg.set_value("train_status", "No data fetched")
+                try:
+                    combined = pipeline.prepare_multiple(tickers, period=period)
+                    X, y = pipeline.get_features_and_target(combined)
+                except Exception as e:
+                    dpg.set_value("train_status", f"Data error: {str(e)[:60]}")
                     return
 
-                import pandas as pd
-                combined = pd.concat(all_data, ignore_index=True).dropna()
-
-                feature_cols = [c for c in combined.columns if c not in
-                               ['Open', 'High', 'Low', 'Close', 'Volume', 'Adj Close', 'label', 'forward_return']]
-                X = combined[feature_cols].values
-                y = combined['label'].values
-
-                dpg.set_value("train_samples", str(len(combined)))
+                dpg.set_value("train_samples", str(len(X)))
 
                 # Run tuning
                 tuner = HyperparameterTuner()
@@ -430,23 +411,29 @@ class TrainingView:
                 if model_type in ["Random Forest", "All Models"]:
                     dpg.set_value("train_status", f"Tuning Random Forest ({n_trials} trials)...")
                     dpg.set_value("curr_model", "Random Forest")
-                    best_params, best_score = tuner.tune_random_forest(X, y, n_trials=n_trials)
+                    result = tuner.tune_random_forest(X, y, n_trials=n_trials)
+                    best_params = result.get("best_params", {})
+                    best_score = result.get("best_value", 0)
                     dpg.set_value("train_progress", 0.33 if model_type == "All Models" else 1.0)
 
                 if model_type in ["XGBoost (GPU)", "All Models"]:
                     dpg.set_value("train_status", f"Tuning XGBoost ({n_trials} trials)...")
                     dpg.set_value("curr_model", "XGBoost")
-                    params, score = tuner.tune_xgboost(X, y, n_trials=n_trials, use_gpu=use_gpu)
+                    result = tuner.tune_xgboost(X, y, n_trials=n_trials, use_gpu=use_gpu)
+                    score = result.get("best_value", 0)
                     if score > best_score:
-                        best_params, best_score = params, score
+                        best_params = result.get("best_params", {})
+                        best_score = score
                     dpg.set_value("train_progress", 0.66 if model_type == "All Models" else 1.0)
 
                 if model_type in ["LSTM (CUDA)", "All Models"]:
                     dpg.set_value("train_status", f"Tuning LSTM ({n_trials} trials)...")
                     dpg.set_value("curr_model", "LSTM")
-                    params, score = tuner.tune_lstm(X, y, n_trials=min(n_trials, 20))  # LSTM tuning is slow
+                    result = tuner.tune_lstm(X, y, n_trials=min(n_trials, 20))
+                    score = result.get("best_value", 0)
                     if score > best_score:
-                        best_params, best_score = params, score
+                        best_params = result.get("best_params", {})
+                        best_score = score
                     dpg.set_value("train_progress", 1.0)
 
                 dpg.set_value("best_acc", f"{best_score:.1%}")

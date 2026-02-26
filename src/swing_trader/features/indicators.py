@@ -200,3 +200,81 @@ class TechnicalIndicators:
         df["bb_width"] = (df["bb_upper"] - df["bb_lower"]) / df["bb_mid"]
 
         return df
+
+    @staticmethod
+    def infer_config_from_features(feature_columns: list[str]) -> dict:
+        """Infer indicator configuration from feature column names.
+
+        This allows reconstructing the config needed to generate features
+        that match what a model was trained on, even if feature_config
+        wasn't saved with the model.
+        """
+        import re
+
+        config = {
+            "features": {
+                "sma": False,
+                "ema": False,
+                "rsi": False,
+                "macd": False,
+                "bollinger": False,
+                "atr": False,
+                "obv": False,
+                "stochastic": False,
+            },
+            "params": {
+                "rsi_period": 14,
+                "sma_periods": [],
+                "ema_periods": [],
+                "atr_period": 14,
+                "bb_period": 20,
+                "stoch_period": 14,
+            }
+        }
+
+        for col in feature_columns:
+            # SMA: sma_10, sma_20, sma_50, etc.
+            if match := re.match(r'sma_(\d+)', col):
+                config["features"]["sma"] = True
+                period = int(match.group(1))
+                if period not in config["params"]["sma_periods"]:
+                    config["params"]["sma_periods"].append(period)
+
+            # EMA: ema_12, ema_26, etc.
+            elif match := re.match(r'ema_(\d+)', col):
+                config["features"]["ema"] = True
+                period = int(match.group(1))
+                if period not in config["params"]["ema_periods"]:
+                    config["params"]["ema_periods"].append(period)
+
+            # RSI: rsi_14, rsi_11, etc.
+            elif match := re.match(r'rsi_(\d+)', col):
+                config["features"]["rsi"] = True
+                config["params"]["rsi_period"] = int(match.group(1))
+
+            # MACD
+            elif col in ['macd', 'macd_signal', 'macd_hist']:
+                config["features"]["macd"] = True
+
+            # Bollinger Bands
+            elif col in ['bb_upper', 'bb_lower', 'bb_mid', 'bb_width']:
+                config["features"]["bollinger"] = True
+
+            # ATR: atr_14, etc.
+            elif match := re.match(r'atr_(\d+)', col):
+                config["features"]["atr"] = True
+                config["params"]["atr_period"] = int(match.group(1))
+
+            # OBV
+            elif col == 'obv':
+                config["features"]["obv"] = True
+
+            # Stochastic
+            elif col in ['stoch_k', 'stoch_d']:
+                config["features"]["stochastic"] = True
+
+        # Sort periods for consistency
+        config["params"]["sma_periods"].sort()
+        config["params"]["ema_periods"].sort()
+
+        return config

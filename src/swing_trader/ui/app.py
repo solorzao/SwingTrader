@@ -211,7 +211,7 @@ class SignalsTab(QWidget):
 
         ticker_layout.addWidget(QLabel("Period"))
         self.period_combo = QComboBox()
-        self.period_combo.addItems(["1mo", "3mo", "6mo", "1y", "2y"])
+        self.period_combo.addItems(["2wk", "1mo", "3mo", "6mo", "1y", "2y"])
         self.period_combo.setCurrentText("6mo")
         ticker_layout.addWidget(self.period_combo)
 
@@ -301,7 +301,17 @@ class SignalsTab(QWidget):
 
             fetcher = StockDataFetcher()
             indicators = TechnicalIndicators()
-            data = fetcher.fetch(ticker, period=period)
+
+            # For shorter periods, fetch more data for indicator calculation
+            # (SMA_50 needs ~50 days warmup), then trim to requested display period
+            fetch_period_map = {
+                "2wk": "1y",
+                "1mo": "1y",
+                "3mo": "1y",
+                "6mo": "2y",
+            }
+            fetch_period = fetch_period_map.get(period, period)
+            data = fetcher.fetch(ticker, period=fetch_period)
 
             signal_info = None
             if model_name and data is not None and not data.empty:
@@ -310,8 +320,11 @@ class SignalsTab(QWidget):
                 try:
                     model = registry.get_model(model_name)
 
-                    # Use model's feature config if available, otherwise use defaults
+                    # Use model's feature config if available, otherwise infer from feature columns
                     model_feature_config = getattr(model, 'feature_config', None)
+                    if not model_feature_config and hasattr(model, 'feature_columns'):
+                        model_feature_config = indicators.infer_config_from_features(model.feature_columns)
+
                     if model_feature_config:
                         data = indicators.add_all(data, config=model_feature_config)
                     else:
@@ -361,6 +374,17 @@ class SignalsTab(QWidget):
                         }
                 except Exception as e:
                     print(f"Model prediction error: {e}")
+
+            # Trim data to requested display period if we fetched more
+            if period in fetch_period_map and data is not None and not data.empty:
+                display_days_map = {
+                    "2wk": 10,    # ~2 weeks of trading days
+                    "1mo": 21,    # ~1 month of trading days
+                    "3mo": 63,    # ~3 months of trading days
+                    "6mo": 126,   # ~6 months of trading days
+                }
+                display_days = display_days_map.get(period, len(data))
+                data = data.tail(display_days)
 
             return data, ticker, signal_info
 
@@ -458,6 +482,9 @@ class SignalsTab(QWidget):
                 registry = ModelRegistry()
                 model = registry.get_model(model_name)
                 model_feature_config = getattr(model, 'feature_config', None)
+                # Infer config from feature columns if not saved
+                if not model_feature_config and hasattr(model, 'feature_columns'):
+                    model_feature_config = indicators.infer_config_from_features(model.feature_columns)
 
             results = []
             for i, ticker in enumerate(tickers):
@@ -1114,42 +1141,31 @@ class TrainingTab(QWidget):
                 if training_tab._stop_requested:
                     raise InterruptedError("Training cancelled by user")
 
-            from ..data.fetcher import StockDataFetcher
-            from ..features.indicators import TechnicalIndicators
-            from ..features.labeler import SignalLabeler
-            import pandas as pd
+            from ..data.pipeline import DataPipeline
+            from ..config import FeatureConfig
+            from ..evaluation.evaluator import ModelEvaluator
             from pathlib import Path
 
             tickers = [t.strip().upper() for t in tickers_text.split(",")]
-            fetcher = StockDataFetcher()
-            indicators = TechnicalIndicators()
-            labeler = SignalLabeler()
 
             update_progress("Fetching market data...", 10)
-            all_data = []
-            for i, ticker in enumerate(tickers):
-                check_cancelled()
-                update_progress(f"Fetching {ticker}...", 10 + (i * 20 // len(tickers)))
-                data = fetcher.fetch(ticker, period=period)
-                if data is not None and not data.empty:
-                    data = indicators.add_all(data, config=feature_config)
-                    data['label'] = labeler.create_labels(data)
-                    all_data.append(data)
-
             check_cancelled()
-            if not all_data:
-                return None
 
-            update_progress("Preparing features...", 30)
-            combined = pd.concat(all_data, ignore_index=True).dropna()
-            exclude_cols = ['open', 'high', 'low', 'close', 'volume', 'label']
-            feature_cols = [c for c in combined.columns if c not in exclude_cols]
-            X = combined[feature_cols]
-            y = combined['label']
+            fc = FeatureConfig.from_indicator_config(feature_config)
+            pipeline = DataPipeline(feature_config=fc)
 
-            # Split data for training and validation
-            from sklearn.model_selection import train_test_split
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+            update_progress("Preparing features and splitting data...", 25)
+            check_cancelled()
+
+            try:
+                split = pipeline.prepare_and_split(tickers, period=period)
+            except Exception as e:
+                raise ValueError(f"Data preparation failed: {e}")
+
+            feature_cols = list(split.X_train.columns)
+            X_train, X_test = split.X_train, split.X_test
+            y_train, y_test = split.y_train, split.y_test
+            training_end_date = split.train_end_date
 
             check_cancelled()
 
@@ -1260,14 +1276,19 @@ class TrainingTab(QWidget):
                     verbose=False
                 )
                 model.is_fitted = True
+            elif is_lstm:
+                model.fit(X_train, y_train, scaler_X=X_train)
             else:
                 model.fit(X_train, y_train)
 
             update_progress("Calculating metrics...", 80)
 
-            # Calculate comprehensive metrics
+            # Evaluate with proper train/test comparison
+            evaluator = ModelEvaluator()
+            report = evaluator.evaluate(model, split)
+
             from sklearn.metrics import (
-                accuracy_score, precision_score, recall_score, f1_score,
+                precision_score, recall_score,
                 confusion_matrix, roc_auc_score
             )
             import numpy as np
@@ -1281,10 +1302,16 @@ class TrainingTab(QWidget):
             else:
                 y_true = y_test.values
 
-            accuracy = accuracy_score(y_true, predictions)
+            accuracy = report.test_metrics.accuracy
+            f1 = report.test_metrics.f1_macro
             precision = precision_score(y_true, predictions, average='weighted', zero_division=0)
             recall = recall_score(y_true, predictions, average='weighted', zero_division=0)
-            f1 = f1_score(y_true, predictions, average='weighted', zero_division=0)
+
+            # Train metrics for comparison
+            train_accuracy = report.train_metrics.accuracy
+            train_f1 = report.train_metrics.f1_macro
+            overfit_score = report.overfit_score
+            is_overfit = report.is_overfit
 
             # AUC requires probability predictions
             try:
@@ -1333,7 +1360,10 @@ class TrainingTab(QWidget):
                 "precision": precision,
                 "recall": recall,
                 "f1": f1,
-                "auc": auc
+                "f1_macro": f1,
+                "auc": auc,
+                "training_end_date": training_end_date.isoformat() if training_end_date else None,
+                "test_end_date": split.test_end_date.isoformat() if hasattr(split, 'test_end_date') else None,
             }
 
             model.save(model_path, metrics=model_metrics, feature_config=feature_config)
@@ -1408,13 +1438,19 @@ class TrainingTab(QWidget):
                 print(f"MLflow logging error (non-fatal): {e}")
 
             return {
-                'samples': len(combined),
+                'samples': split.train_size + split.test_size,
+                'train_samples': split.train_size,
+                'test_samples': split.test_size,
                 'model_type': model_type,
                 'accuracy': accuracy,
                 'precision': precision,
                 'recall': recall,
                 'f1': f1,
                 'auc': auc,
+                'train_accuracy': train_accuracy,
+                'train_f1': train_f1,
+                'overfit_score': overfit_score,
+                'is_overfit': is_overfit,
                 'confusion_matrix': cm.tolist(),
                 'feature_names': feature_names,
                 'feature_importance': feature_importance,
@@ -1446,14 +1482,24 @@ class TrainingTab(QWidget):
             return
 
         samples = result['samples']
-        self.status_label.setText(f"Training complete! {samples} samples processed")
+        overfit_warning = ""
+        if result.get('is_overfit'):
+            overfit_warning = f" | OVERFIT WARNING (gap: {result['overfit_score']:.0%})"
+        self.status_label.setText(
+            f"Training complete! {result.get('train_samples', samples)} train, "
+            f"{result.get('test_samples', 0)} test{overfit_warning}"
+        )
 
         # Signal that training is complete so model list can refresh
         self.training_complete.emit()
 
-        # Update metric displays
-        self.metric_displays["Accuracy"].setText(f"{result['accuracy']:.1%}")
-        self.metric_displays["Accuracy"].setStyleSheet("color: #00D4AA; font-size: 16px; font-weight: bold;")
+        # Update metric displays with train vs test comparison
+        train_acc = result.get('train_accuracy')
+        acc_text = f"{result['accuracy']:.1%}"
+        if train_acc is not None:
+            acc_text += f"\ntrain: {train_acc:.1%}"
+        self.metric_displays["Accuracy"].setText(acc_text)
+        self.metric_displays["Accuracy"].setStyleSheet("color: #00D4AA; font-size: 14px; font-weight: bold;")
 
         self.metric_displays["Precision"].setText(f"{result['precision']:.1%}")
         self.metric_displays["Precision"].setStyleSheet("color: #58A6FF; font-size: 16px; font-weight: bold;")
@@ -1461,8 +1507,14 @@ class TrainingTab(QWidget):
         self.metric_displays["Recall"].setText(f"{result['recall']:.1%}")
         self.metric_displays["Recall"].setStyleSheet("color: #58A6FF; font-size: 16px; font-weight: bold;")
 
-        self.metric_displays["F1 Score"].setText(f"{result['f1']:.1%}")
-        self.metric_displays["F1 Score"].setStyleSheet("color: #FFD93D; font-size: 16px; font-weight: bold;")
+        train_f1 = result.get('train_f1')
+        f1_text = f"{result['f1']:.1%}"
+        if train_f1 is not None:
+            f1_text += f"\ntrain: {train_f1:.1%}"
+        # Color F1 red if overfitting detected
+        f1_color = "#FF6B6B" if result.get('is_overfit') else "#FFD93D"
+        self.metric_displays["F1 Score"].setText(f1_text)
+        self.metric_displays["F1 Score"].setStyleSheet(f"color: {f1_color}; font-size: 14px; font-weight: bold;")
 
         if result['auc'] is not None:
             self.metric_displays["AUC"].setText(f"{result['auc']:.3f}")
@@ -1670,7 +1722,16 @@ class BacktestTab(QWidget):
 
             fetcher = StockDataFetcher()
             indicators = TechnicalIndicators()
-            data = fetcher.fetch(ticker, period=period)
+
+            # For shorter periods, fetch more data for indicator calculation
+            fetch_period_map = {
+                "2wk": "1y",
+                "1mo": "1y",
+                "3mo": "1y",
+                "6mo": "2y",
+            }
+            fetch_period = fetch_period_map.get(period, period)
+            data = fetcher.fetch(ticker, period=fetch_period)
 
             if data is None or data.empty:
                 return None
@@ -1683,12 +1744,47 @@ class BacktestTab(QWidget):
                 registry = ModelRegistry()
                 model = registry.get_model(model_name)
 
-                # Use model's feature config if available, otherwise use defaults
+                # Use model's feature config if available, otherwise infer from feature columns
                 model_feature_config = getattr(model, 'feature_config', None)
+                if not model_feature_config and hasattr(model, 'feature_columns'):
+                    # Reconstruct config from what features the model expects
+                    model_feature_config = indicators.infer_config_from_features(model.feature_columns)
+
                 if model_feature_config:
                     data = indicators.add_all(data, config=model_feature_config)
                 else:
                     data = indicators.add_all(data)
+
+                # Filter to only post-training data to prevent data leakage
+                training_end_date = None
+                if hasattr(model, 'metrics') and model.metrics:
+                    training_end_str = model.metrics.get('training_end_date')
+                    if training_end_str:
+                        from datetime import datetime
+                        try:
+                            training_end_date = pd.Timestamp(training_end_str)
+                            # Filter to only data after training ended
+                            pre_filter_len = len(data)
+                            data = data[data.index > training_end_date]
+                            if progress_callback:
+                                progress_callback(f"Backtesting on post-training data ({len(data)} days)...", 55)
+                        except:
+                            pass  # If date parsing fails, use all data
+
+                # Trim to display period after indicators are calculated (only if no training filter applied)
+                if training_end_date is None and period in fetch_period_map:
+                    display_days_map = {
+                        "2wk": 10, "1mo": 21, "3mo": 63, "6mo": 126,
+                    }
+                    display_days = display_days_map.get(period, len(data))
+                    data = data.tail(display_days)
+
+                if data.empty:
+                    raise ValueError(
+                        f"No data available after training end date ({training_end_str}). "
+                        f"The model was trained on data up to this date. "
+                        f"Try selecting a longer period or retrain with older data."
+                    )
 
                 predictions = model.predict(data)
 
